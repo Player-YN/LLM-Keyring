@@ -388,6 +388,36 @@
     </div>
   </header>
 
+  <!-- ============ BACKEND DOWN BANNER ============ -->
+  <div
+    x-show="backendDown"
+    x-transition.opacity
+    class="sticky top-14 z-20"
+    style="display: none;"
+  >
+    <div
+      class="max-w-6xl mx-auto px-6 py-2 mt-2 rounded-lg flex items-center gap-3"
+      style="background: rgba(255, 59, 48, 0.12); border: 1px solid rgba(255, 59, 48, 0.3); color: var(--error);"
+    >
+      <i data-lucide="wifi-off" class="w-4 h-4 flex-shrink-0"></i>
+      <div class="flex-1 text-[13px]">
+        <span class="font-medium">
+          <span class="i18n-en">Backend not responding</span>
+          <span class="i18n-zh">后端无响应</span>
+        </span>
+        <span class="ml-2 opacity-80">
+          <span class="i18n-en">Restart llm-keyring.exe or run <code class="px-1 rounded bg-black/10">start.bat</code></span>
+          <span class="i18n-zh">请重启 llm-keyring.exe 或运行 <code class="px-1 rounded bg-black/10">start.bat</code></span>
+        </span>
+      </div>
+      <button @click="retryBackend()" class="btn" style="padding: 4px 10px; font-size: 12px;">
+        <i data-lucide="refresh-cw" class="w-3 h-3"></i>
+        <span class="i18n-en">Retry</span>
+        <span class="i18n-zh">重试</span>
+      </button>
+    </div>
+  </div>
+
   <!-- ============ MAIN ============ -->
   <main class="max-w-6xl mx-auto px-6 py-8">
 
@@ -966,6 +996,7 @@
         lang: 'en',
         templatesOpen: false,
         showSkipped: false,
+        backendDown: false,
 
         toast: { visible: false, message: '', type: 'info' },
         modal: { open: false, mode: 'create', name: '', value: '', error: '', showValue: false },
@@ -1071,8 +1102,9 @@
           try {
             const r = await fetch('/api/keys');
             this.managedKeys = (await r.json()).items || [];
+            this.backendDown = false;
           } catch (e) {
-            this.showToast('Failed to load: ' + e.message, 'error');
+            this.handleBackendDown('Failed to load: ' + e.message);
           } finally {
             this.loading = false;
           }
@@ -1083,11 +1115,35 @@
           try {
             const r = await fetch('/api/discover');
             this.discover = await r.json();
+            this.backendDown = false;
           } catch (e) {
-            this.showToast('Discover failed: ' + e.message, 'error');
+            this.handleBackendDown('Discover failed: ' + e.message);
           } finally {
             this.discoverLoading = false;
             this.$nextTick(() => this.initIcons());
+          }
+        },
+
+        handleBackendDown(msg) {
+          this.backendDown = true;
+          this.showToast(msg, 'error');
+        },
+
+        async retryBackend() {
+          // Quick re-check if backend is back up
+          try {
+            const r = await fetch('/api/info');
+            if (r.ok) {
+              this.backendDown = false;
+              await this.refresh();
+              await this.loadDiscover();
+              this.showToast(this.lang === 'zh' ? '已重新连接' : 'Reconnected', 'success');
+            }
+          } catch {
+            this.showToast(
+              this.lang === 'zh' ? '后端仍无响应 — 请重启 llm-keyring.exe' : 'Backend still down — restart llm-keyring.exe',
+              'error'
+            );
           }
         },
 
