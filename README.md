@@ -31,8 +31,8 @@ providers — and are tired of `setx` every single time.
 ### Option A: From source (you have Python 3.9+)
 
 ```powershell
-git clone https://github.com/<your-org>/llm-keyring.git
-cd llm-keyring
+git clone https://github.com/Player-YN/LLM-Keyring.git
+cd LLM-Keyring
 .\start.bat
 ```
 
@@ -113,16 +113,19 @@ Missing one? You can add any custom name — pick "Add Key" and type your own.
 
 ### "I added a key, but my already-open terminal doesn't see it."
 
-**This is a Windows kernel limitation, not a bug.** Environment variables are
-copied into a process's memory at startup. Already-running processes (your
-open PowerShell, your running Python script) won't reload them.
+**Already-running processes won't reload env vars** — that's a Windows
+kernel limitation, not a bug. The env block is copied into a process at
+startup and stays frozen.
 
-**Fix:** Open a **new** terminal window. New processes inherit the latest
-env vars.
+LLM-Keyring uses a **triple-write strategy** to minimize this:
 
-LLM-Keyring broadcasts a `WM_SETTINGCHANGE` Windows message after each
-write, which some apps (notably File Explorer) react to — but console
-sessions generally don't.
+1. Writes to `HKCU\Environment` (persists across reboots)
+2. Calls `SetEnvironmentVariableW` (updates the kernel session env block,
+   so any process started *after* this sees the new var)
+3. Broadcasts `WM_SETTINGCHANGE` (notifies GUI apps like Explorer)
+
+So if you open a **new** PowerShell or CMD window after adding a key, it
+will see the var. Already-open windows won't, until you restart them.
 
 ### "Why not use `setx` directly?"
 
