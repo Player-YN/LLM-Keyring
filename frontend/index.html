@@ -11,6 +11,9 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
 
+  <!-- TailwindCSS via CDN (single dev/prod build) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
   <!-- Lucide Icons (outline style, like Apple's SF Symbols) -->
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 
@@ -1003,10 +1006,34 @@
 
           // Init Lucide icons (after DOM settles)
           this.$nextTick(() => this.initIcons());
+
+          // Watch for future DOM changes (Alpine x-show / x-if / list renders)
+          // and auto-convert any new [data-lucide] elements. This is the
+          // bulletproof way to keep icons in sync with Alpine's reactivity.
+          this.initIconObserver();
         },
 
         initIcons() {
           if (window.lucide) window.lucide.createIcons();
+        },
+
+        initIconObserver() {
+          // Debounced createIcons — MutationObserver fires on every DOM
+          // mutation, which can be hundreds per render. Throttle to once
+          // per animation frame.
+          let scheduled = false;
+          this._iconObserver = new MutationObserver(() => {
+            if (scheduled) return;
+            scheduled = true;
+            requestAnimationFrame(() => {
+              scheduled = false;
+              if (window.lucide) window.lucide.createIcons();
+            });
+          });
+          this._iconObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+          });
         },
 
         applyLang() {
@@ -1309,19 +1336,30 @@
         },
 
         async exportEnv() {
+          // Export .env with real plaintext values.
+          // The file includes a WARNING header reminding the user
+          // not to commit it. This is the explicit purpose of Export:
+          // to give the user a file they can `source` or use with
+          // --env-file for Docker / CI / migration.
           try {
             const r = await fetch('/api/export', { method: 'POST' });
             const text = await r.text();
             const blob = new Blob([text], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
+            const ts = new Date().toISOString().slice(0, 10);
             a.href = url;
-            a.download = '.env';
+            a.download = `llm-keyring-env-${ts}.env`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            this.showToast(this.lang === 'zh' ? '已导出 .env' : 'Exported .env', 'success');
+            this.showToast(
+              this.lang === 'zh'
+                ? `已导出 llm-keyring-env-${ts}.env（含明文 key，请妥善保管）`
+                : `Exported llm-keyring-env-${ts}.env (contains plaintext keys — handle with care)`,
+              'info'
+            );
           } catch (e) {
             this.showToast('Export failed: ' + e.message, 'error');
           }

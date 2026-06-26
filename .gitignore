@@ -55,3 +55,9 @@ Desktop.ini
 
 # User whitelist (persisted managed-keys list — DO NOT commit user data)
 managed_keys.json
+
+# Audit artifacts (local-only)
+_spawn_payload.json
+_spawn.json
+_spawn_*.json
+audit_screenshots/
