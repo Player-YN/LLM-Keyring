@@ -52,3 +52,6 @@ Desktop.ini
 
 # User-specific
 *.local
+
+# User whitelist (persisted managed-keys list — DO NOT commit user data)
+managed_keys.json

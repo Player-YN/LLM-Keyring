@@ -1,56 +1,130 @@
 """
-env_manager.py — Cross-platform User-level environment variable management.
+env_manager.py — Cross-platform User-level environment variable management,
+plus LLM-key classifier and managed-keys whitelist.
 
-This module abstracts reading/writing/deleting User-level environment variables
-across Windows / macOS / Linux.
+Three responsibilities:
 
-Windows:
-    Reads from HKCU\\Environment via winreg (this is the canonical store).
-    Writes via winreg directly (more reliable than `setx`, which has quirks
-    with quoting, 1024-char truncation, and broadcasts).
+  1. **Env var CRUD** (Windows / macOS / Linux)
+     - Windows: triple-write (registry + SetEnvironmentVariableW + broadcast)
+     - macOS/Linux: stub (read-only in v0.1)
 
-macOS / Linux:
-    Read falls back to os.environ (current process only — incomplete but OK
-    for v0.1).
-    Write/Delete raise NotImplementedError; v0.1 is Windows-focused.
+  2. **LLM-key classifier**
+     - Detects which env vars look like LLM API keys
+     - Three confidence levels: high / medium / low
+     - Blacklist excludes system / non-LLM vars (OneDrive, PATH, etc.)
 
-Note on Windows environment variables:
-    - Changes to HKCU\\Environment only affect NEW processes. Already-running
-      processes have a snapshot of the env block and won't reload it. This
-      is a Windows kernel limitation, not a bug in this module.
-    - To make NEW processes pick up changes immediately, we broadcast
-      WM_SETTINGCHANGE via SendMessageTimeout after each write.
+  3. **Managed-keys whitelist**
+     - Persisted in `managed_keys.json` next to the executable
+     - Only keys in this list appear in the Managed view
+     - Added when user creates / adopts / imports a key
+
+This split is the security model: the panel can ONLY touch keys the user
+explicitly marked as "this is mine, manage it for me". Everything else in
+the user's environment stays invisible and untouchable.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import platform
+import re
 import subprocess
 import sys
-from typing import Dict
+from pathlib import Path
+from typing import Dict, List, Optional, Set
 
 
 SYSTEM = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
 # ============================================================
-# Windows implementation
+# Managed-keys whitelist persistence
+# ============================================================
+
+def _managed_keys_path() -> Path:
+    """
+    Locate the managed-keys JSON file.
+
+    Layout:
+        dev mode:   <repo>/managed_keys.json
+        bundled:    %APPDATA%/LLM-Keyring/managed_keys.json  (Windows)
+                    ~/Library/Application Support/LLM-Keyring/  (macOS)
+                    ~/.config/llm-keyring/                     (Linux)
+
+    The bundled layout keeps user state out of the .exe directory and
+    survives reinstalls.
+    """
+    if getattr(sys, "frozen", False):
+        # Bundled app — store in user data dir
+        if SYSTEM == "Windows":
+            base = Path(os.environ.get("APPDATA", Path.home())) / "LLM-Keyring"
+        elif SYSTEM == "Darwin":
+            base = Path.home() / "Library" / "Application Support" / "LLM-Keyring"
+        else:
+            base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "llm-keyring"
+        base.mkdir(parents=True, exist_ok=True)
+        return base / "managed_keys.json"
+    else:
+        # Dev mode — store next to main.py
+        return Path(__file__).parent / "managed_keys.json"
+
+
+def _load_managed_keys() -> Set[str]:
+    """Load the set of key names the user has marked as managed."""
+    path = _managed_keys_path()
+    if not path.exists():
+        return set()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return set(data.get("keys", []))
+    except (json.JSONDecodeError, OSError):
+        # Corrupt file — start fresh, don't lose user's env vars
+        return set()
+
+
+def _save_managed_keys(keys: Set[str]) -> None:
+    """Persist the managed-keys whitelist to disk."""
+    path = _managed_keys_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"keys": sorted(keys)}, f, indent=2, ensure_ascii=False)
+    except OSError:
+        # If we can't write (read-only fs, etc.), the panel still works in-memory
+        pass
+
+
+def add_managed_key(name: str) -> None:
+    """Add a key name to the managed whitelist."""
+    keys = _load_managed_keys()
+    keys.add(name)
+    _save_managed_keys(keys)
+
+
+def remove_managed_key(name: str) -> None:
+    """Remove a key name from the managed whitelist (does NOT delete the env var)."""
+    keys = _load_managed_keys()
+    keys.discard(name)
+    _save_managed_keys(keys)
+
+
+def is_managed(name: str) -> bool:
+    """Check if a key is in the managed whitelist."""
+    return name in _load_managed_keys()
+
+
+def get_managed_keys() -> Set[str]:
+    """Get a fresh copy of the managed whitelist."""
+    return _load_managed_keys()
+
+
+# ============================================================
+# Windows env var CRUD (registry + kernel session + broadcast)
 # ============================================================
 
 def _windows_read_all_user_env() -> Dict[str, str]:
-    """
-    Read all User-level environment variables from the Windows registry.
-
-    Returns a dict mapping var name to value. REG_EXPAND_SZ values are returned
-    with their raw %VAR% references (not expanded). Callers can use
-    os.path.expandvars() if they want expansion.
-
-    Why registry and not os.environ?
-    - os.environ reflects the env block at the time Python started. To see
-      the *current* User-level state (e.g., after another tool modified it),
-      we must read the registry directly.
-    """
+    """Read all User-level env vars from HKCU\\Environment."""
     import winreg
 
     env_vars: Dict[str, str] = {}
@@ -64,45 +138,17 @@ def _windows_read_all_user_env() -> Dict[str, str]:
                         env_vars[name] = value
                     i += 1
                 except OSError:
-                    # No more values
                     break
     except FileNotFoundError:
-        # The Environment key doesn't exist yet (fresh user profile)
         pass
     return env_vars
 
 
 def _windows_set_user_env(name: str, value: str) -> None:
-    """
-    Set a User-level environment variable using a triple-write strategy.
-
-    Three steps, all required for full correctness:
-
-    1. **winreg write** to HKCU\\Environment — persists the value across
-       logouts and reboots. This is the canonical store.
-
-    2. **SetEnvironmentVariableW** via ctypes — updates the kernel's User
-       environment block for the current Windows session. Without this,
-       newly-launched cmd.exe / PowerShell / Python processes (which inherit
-       their env block from the kernel via CreateProcess) will NOT see the
-       new var, even though it's in the registry.
-
-    3. **WM_SETTINGCHANGE broadcast** — notifies already-running GUI apps
-       (Explorer, some IDEs) to refresh their cached env. Console hosts
-       generally don't react to this.
-
-    Args:
-        name: Variable name (e.g. "OPENAI_API_KEY")
-        value: Variable value (e.g. "sk-...")
-
-    Raises:
-        OSError: If the registry write fails (e.g., permission denied)
-        RuntimeError: If SetEnvironmentVariableW fails (very rare)
-    """
+    """Triple-write: registry + SetEnvironmentVariableW + WM_SETTINGCHANGE."""
     import ctypes
     import winreg
 
-    # Step 1: Write to HKCU\Environment (persistence)
     key = winreg.OpenKey(
         winreg.HKEY_CURRENT_USER,
         r"Environment",
@@ -114,38 +160,15 @@ def _windows_set_user_env(name: str, value: str) -> None:
     finally:
         winreg.CloseKey(key)
 
-    # Step 2: Update kernel session env block (immediate visibility for new
-    # processes). SetEnvironmentVariableW writes to the calling process's
-    # User environment block, which is inherited by all child processes.
-    if not ctypes.windll.kernel32.SetEnvironmentVariableW(name, value):
-        # GetLastError() would tell us why, but this rarely fails for
-        # reasonable inputs. Don't block the operation — registry write
-        # already succeeded, and the var will be visible after re-login.
-        pass
-
-    # Step 3: Broadcast WM_SETTINGCHANGE (best-effort, non-fatal if it fails)
+    ctypes.windll.kernel32.SetEnvironmentVariableW(name, value)
     _broadcast_setting_change()
 
 
 def _windows_delete_user_env(name: str) -> bool:
-    """
-    Delete a User-level environment variable.
-
-    Args:
-        name: Variable name to delete
-
-    Returns:
-        True if the variable existed and was deleted; False if it didn't exist.
-
-    Strategy mirrors _windows_set_user_env:
-      1. Remove from HKCU\\Environment (persistence)
-      2. Call SetEnvironmentVariableW with NULL (clear kernel session env)
-      3. Broadcast WM_SETTINGCHANGE (notify GUI apps)
-    """
+    """Triple-delete: registry + SetEnvironmentVariableW(NULL) + broadcast."""
     import ctypes
     import winreg
 
-    # Step 1: Remove from registry
     try:
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
@@ -167,29 +190,14 @@ def _windows_delete_user_env(name: str) -> bool:
         winreg.CloseKey(key)
 
     if deleted:
-        # Step 2: Clear from kernel session env
-        # SetEnvironmentVariableW with NULL value removes the var from the
-        # session's User environment block.
         ctypes.windll.kernel32.SetEnvironmentVariableW(name, None)
-
-        # Step 3: Broadcast (non-fatal)
         _broadcast_setting_change()
 
     return deleted
 
 
 def _broadcast_setting_change() -> None:
-    """
-    Broadcast WM_SETTINGCHANGE to all top-level windows so new processes
-    pick up env var updates immediately.
-
-    Implementation: PowerShell one-liner that uses Add-Type to define a
-    SendMessageTimeout P/Invoke and calls it with HWND_BROADCAST.
-
-    Caveat: Console subprocesses (cmd.exe, PowerShell sessions, Python
-    scripts) typically do NOT react to this broadcast. Only new launches
-    will see the updated env. This is a Windows kernel limitation.
-    """
+    """Best-effort WM_SETTINGCHANGE broadcast (non-fatal on failure)."""
     if SYSTEM != "Windows":
         return
     try:
@@ -213,74 +221,58 @@ def _broadcast_setting_change() -> None:
             timeout=5,
         )
     except Exception:
-        # Broadcast failure is non-fatal
         pass
 
 
 # ============================================================
-# macOS / Linux stubs (v0.1 is Windows-focused)
+# macOS / Linux stubs (v0.1 read-only)
 # ============================================================
 
 def _unix_read_all_user_env() -> Dict[str, str]:
-    """
-    On macOS/Linux, fall back to os.environ for reading.
-
-    This is INCOMPLETE — it only sees the current Python process's env block,
-    not the user's full env. The full implementation would need to:
-      - macOS: parse ~/.MacOSX/environment.plist
-      - Linux: parse /etc/environment, ~/.pam_environment, or shell rc files
-
-    Both are out of scope for v0.1. Use Windows for full functionality.
-    """
     return dict(os.environ)
 
 
 def _unix_set_user_env(name: str, value: str) -> None:
-    """Set on macOS/Linux is not supported in v0.1."""
     raise NotImplementedError(
-        f"Setting environment variables on {SYSTEM} is not supported in "
-        f"LLM-Keyring v0.1. The app is Windows-focused. For macOS/Linux, "
-        f"edit your shell rc file (e.g., ~/.zshrc, ~/.bashrc) directly."
+        f"Setting env vars on {SYSTEM} is not supported in v0.1. "
+        "Edit your shell rc file directly."
     )
 
 
 def _unix_delete_user_env(name: str) -> bool:
-    """Delete on macOS/Linux is not supported in v0.1."""
     raise NotImplementedError(
-        f"Deleting environment variables on {SYSTEM} is not supported in "
-        f"LLM-Keyring v0.1."
+        f"Deleting env vars on {SYSTEM} is not supported in v0.1."
     )
 
 
 # ============================================================
-# Public API
+# Public env var API
 # ============================================================
 
 def read_all_user_env() -> Dict[str, str]:
-    """
-    Read all User-level environment variables.
-
-    Returns:
-        Dict mapping var name to value. On Windows, reads from registry
-        (current state). On macOS/Linux, returns os.environ (current process).
-    """
+    """Read all User-level env vars (raw, unfiltered)."""
     if SYSTEM == "Windows":
         return _windows_read_all_user_env()
     return _unix_read_all_user_env()
 
 
+def read_managed_env() -> Dict[str, str]:
+    """
+    Read env vars but ONLY return those in the managed whitelist.
+
+    This is what the panel's "Managed" view shows. By design, system vars
+    (PATH, OneDrive, etc.) and unmanaged vars are invisible here — even if
+    they exist in the registry.
+    """
+    all_env = read_all_user_env()
+    managed = _load_managed_keys()
+    return {k: v for k, v in all_env.items() if k in managed}
+
+
 def set_user_env(name: str, value: str) -> None:
     """
-    Set a User-level environment variable.
-
-    Args:
-        name: Variable name. Must contain only letters, digits, and underscores.
-        value: Variable value. Any string is accepted.
-
-    Raises:
-        ValueError: If name is empty or contains invalid characters
-        NotImplementedError: If running on macOS/Linux (v0.1 Windows-only)
-        OSError: If the underlying write fails (e.g., permission denied)
+    Set a User-level env var. Caller should ALSO call add_managed_key(name)
+    if this is a new key (i.e., not previously in the whitelist).
     """
     _validate_name(name)
     if value is None:
@@ -291,57 +283,152 @@ def set_user_env(name: str, value: str) -> None:
     else:
         _unix_set_user_env(name, value)
 
+    # Auto-add to managed whitelist (idempotent — already-managed is a no-op)
+    add_managed_key(name)
+
 
 def delete_user_env(name: str) -> bool:
     """
-    Delete a User-level environment variable.
-
-    Args:
-        name: Variable name to delete
-
-    Returns:
-        True if the variable existed and was deleted; False if it didn't exist.
-
-    Raises:
-        NotImplementedError: If running on macOS/Linux (v0.1 Windows-only)
+    Delete a User-level env var AND remove from managed whitelist.
     """
     _validate_name(name)
     if SYSTEM == "Windows":
-        return _windows_delete_user_env(name)
-    return _unix_delete_user_env(name)
+        deleted = _windows_delete_user_env(name)
+    else:
+        deleted = _unix_delete_user_env(name)
 
+    if deleted:
+        remove_managed_key(name)
+    return deleted
 
-# ============================================================
-# Helpers
-# ============================================================
 
 def _validate_name(name: str) -> None:
-    """
-    Validate that an environment variable name is acceptable.
-
-    Rules:
-      - Must be a non-empty string
-      - Must contain only ASCII letters, digits, and underscores
-
-    This is a conservative subset of what Windows allows, but it's enough
-    for all LLM API key conventions (OPENAI_API_KEY, HF_TOKEN, etc.).
-    """
     if not name:
         raise ValueError("Environment variable name cannot be empty")
     if not isinstance(name, str):
         raise ValueError("Environment variable name must be a string")
     if not all(c.isascii() and (c.isalnum() or c == "_") for c in name):
         raise ValueError(
-            f"Invalid environment variable name '{name}'. "
-            "Use only letters, digits, and underscores (A-Z, a-z, 0-9, _)."
+            f"Invalid env var name '{name}'. "
+            "Use only letters, digits, and underscores."
         )
-    # Reserved names on Windows that should not be modified
-    reserved = {
-        "PATH", "PATHEXT", "OS", "PROCESSOR_ARCHITECTURE",
-        "SYSTEMROOT", "WINDIR", "PROGRAMDATA",
-    }
+    reserved = {"PATH", "PATHEXT", "OS", "PROCESSOR_ARCHITECTURE",
+                "SYSTEMROOT", "WINDIR", "PROGRAMDATA"}
     if name in reserved:
         raise ValueError(
             f"'{name}' is a reserved Windows variable. "
             "Modifying it could break your system. Aborting."
         )
+
+
+# ============================================================
+# LLM-key classifier (imported from classifier.py for clarity)
+# ============================================================
+
+try:
+    from classifier import classify as _classify
+except ImportError:
+    # Fallback — should not happen in normal operation
+    def _classify(name, value):
+        return {"confidence": "low", "reasons": ["classifier unavailable"], "auto_adopt": False, "score": 0}
+
+
+def discover_llm_keys() -> List[Dict]:
+    """
+    Scan ALL user env vars and return those that look like LLM keys.
+
+    Each result includes:
+        - name, value, masked_value
+        - confidence: high | medium | low | excluded
+        - reasons: list of human-readable explanations
+        - auto_adopt: True if confident enough to suggest one-click adoption
+        - is_managed: True if already in whitelist
+        - in_env: True if the env var actually exists
+
+    Three-section result for the Discover view:
+        - adoptable: high confidence, not yet managed
+        - review: medium confidence OR high but already managed
+        - skipped: low / excluded (not LLM)
+    """
+    all_env = read_all_user_env()
+    managed = _load_managed_keys()
+
+    adoptable: List[Dict] = []
+    review: List[Dict] = []
+    skipped: List[Dict] = []
+
+    for name, value in sorted(all_env.items()):
+        result = _classify(name, value)
+        entry = {
+            "name": name,
+            "value_preview": (value[:4] + "****" + value[-4:]) if len(value) > 8 else "****",
+            "length": len(value),
+            "confidence": result["confidence"],
+            "reasons": result["reasons"],
+            "auto_adopt": result["auto_adopt"],
+            "score": result["score"],
+            "is_managed": name in managed,
+        }
+
+        if result["confidence"] == "excluded" or result["confidence"] == "low":
+            skipped.append(entry)
+        elif result["auto_adopt"] and not entry["is_managed"]:
+            adoptable.append(entry)
+        else:
+            review.append(entry)
+
+    return {
+        "adoptable": adoptable,
+        "review": review,
+        "skipped_count": len(skipped),  # Don't return skipped entries by default — could be many
+        "total_scanned": len(all_env),
+    }
+
+
+def adopt_key(name: str) -> bool:
+    """
+    Add `name` to the managed whitelist. The env var must already exist.
+
+    Returns True if adopted (newly added), False if already managed.
+    """
+    all_env = read_all_user_env()
+    if name not in all_env:
+        raise ValueError(f"Cannot adopt '{name}': env var does not exist")
+    if name in _load_managed_keys():
+        return False
+    add_managed_key(name)
+    return True
+
+
+def unadopt_key(name: str) -> bool:
+    """
+    Remove `name` from the managed whitelist. Does NOT delete the env var.
+    """
+    if name not in _load_managed_keys():
+        return False
+    remove_managed_key(name)
+    return True
+
+
+def adopt_keys_bulk(names: List[str]) -> Dict:
+    """Adopt multiple keys at once. Returns counts of success/failure."""
+    all_env = read_all_user_env()
+    managed = _load_managed_keys()
+    adopted = []
+    skipped = []
+
+    for name in names:
+        if name not in all_env:
+            skipped.append({"name": name, "reason": "env var does not exist"})
+        elif name in managed:
+            skipped.append({"name": name, "reason": "already managed"})
+        else:
+            add_managed_key(name)
+            adopted.append(name)
+
+    return {
+        "adopted": adopted,
+        "skipped": skipped,
+        "adopted_count": len(adopted),
+        "skipped_count": len(skipped),
+    }

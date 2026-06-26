@@ -1,26 +1,18 @@
 """
 main.py — LLM-Keyring backend (FastAPI).
 
-Single-file FastAPI app that:
-  - Serves the frontend at /
-  - Provides REST API at /api/* for env var CRUD
-  - Provides preset templates at /api/templates
-  - Handles .env import/export
-  - Auto-opens browser on startup
-  - Detects port conflicts and picks the next free port
+v0.2 changes from v0.1:
+  - Security model: only shows keys in the managed whitelist (default view)
+  - New /api/discover endpoint to scan for LLM keys already on the machine
+  - New /api/adopt and /api/unadopt endpoints to manage the whitelist
+  - /api/keys now operates ONLY on managed keys (OneDrive / PATH etc. hidden)
 
 Run:
     python main.py
-
-Or via the bundled start.bat / start.sh.
-
-PyInstaller:
-    pyinstaller --onefile --name llm-keyring --add-data "frontend;frontend" main.py
 """
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import socket
@@ -38,8 +30,15 @@ from pydantic import BaseModel, Field
 
 from env_manager import (
     read_all_user_env,
+    read_managed_env,
     set_user_env,
     delete_user_env,
+    discover_llm_keys,
+    adopt_key,
+    unadopt_key,
+    adopt_keys_bulk,
+    is_managed,
+    get_managed_keys,
 )
 
 
@@ -47,12 +46,12 @@ from env_manager import (
 # Configuration
 # ============================================================
 
-HOST = "127.0.0.1"          # localhost only — never expose to network
+HOST = "127.0.0.1"
 PREFERRED_PORT = 8765
-MAX_PORT_TRIES = 50         # try 8765 → 8814
+MAX_PORT_TRIES = 50
 APP_NAME = "LLM-Keyring"
-APP_VERSION = "0.1.0"
-APP_TAGLINE = "Manage LLM API keys as OS env vars, from your browser."
+APP_VERSION = "0.2.0"
+APP_TAGLINE = "Manage LLM API keys as OS env vars. Only what you mark."
 
 
 # ============================================================
@@ -72,12 +71,19 @@ class EnvImport(BaseModel):
     content: str
 
 
+class AdoptRequest(BaseModel):
+    names: List[str]
+
+
+class UnadoptRequest(BaseModel):
+    name: str
+
+
 # ============================================================
-# Preset templates (24 entries across 3 categories)
+# Preset templates (24 entries)
 # ============================================================
 
 PRESET_TEMPLATES: List[Dict[str, str]] = [
-    # International cloud providers
     {"name": "OPENAI_API_KEY",          "provider": "OpenAI",                        "category": "International"},
     {"name": "ANTHROPIC_API_KEY",       "provider": "Anthropic (Claude)",            "category": "International"},
     {"name": "GOOGLE_API_KEY",          "provider": "Google Gemini",                 "category": "International"},
@@ -88,8 +94,6 @@ PRESET_TEMPLATES: List[Dict[str, str]] = [
     {"name": "XAI_API_KEY",             "provider": "xAI (Grok)",                    "category": "International"},
     {"name": "DEEPSEEK_API_KEY",        "provider": "DeepSeek",                      "category": "International"},
     {"name": "MOONSHOT_API_KEY",        "provider": "Moonshot (Kimi)",               "category": "International"},
-
-    # Aggregators / Routers
     {"name": "OPENROUTER_API_KEY",      "provider": "OpenRouter",                    "category": "Aggregator"},
     {"name": "TOGETHER_API_KEY",        "provider": "Together AI",                   "category": "Aggregator"},
     {"name": "FIREWORKS_API_KEY",       "provider": "Fireworks AI",                  "category": "Aggregator"},
@@ -99,8 +103,6 @@ PRESET_TEMPLATES: List[Dict[str, str]] = [
     {"name": "AZURE_OPENAI_API_KEY",    "provider": "Azure OpenAI",                  "category": "Aggregator"},
     {"name": "AWS_BEDROCK_API_KEY",     "provider": "AWS Bedrock",                   "category": "Aggregator"},
     {"name": "ANYSCALE_API_KEY",        "provider": "Anyscale Endpoints",            "category": "Aggregator"},
-
-    # Chinese aggregators
     {"name": "SILICONFLOW_API_KEY",     "provider": "硅基流动 (SiliconFlow)",        "category": "Chinese"},
     {"name": "ARK_API_KEY",             "provider": "火山方舟 (Ark) / Coding Plan",  "category": "Chinese"},
     {"name": "ZHIPUAI_API_KEY",         "provider": "智谱 BigModel",                 "category": "Chinese"},
@@ -117,18 +119,10 @@ app = FastAPI(title=APP_NAME, version=APP_VERSION)
 
 
 def _frontend_dir() -> Path:
-    """
-    Locate the frontend directory.
-
-    Works in both dev mode (running from source) and PyInstaller bundle mode.
-    """
     if getattr(sys, "frozen", False):
-        # PyInstaller bundle: frontend is unpacked at sys._MEIPASS/frontend
         base = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
         return base / "frontend"
-    else:
-        # Dev mode: frontend is sibling of main.py
-        return Path(__file__).parent / "frontend"
+    return Path(__file__).parent / "frontend"
 
 
 FRONTEND_DIR = _frontend_dir()
@@ -136,15 +130,9 @@ FRONTEND_DIR = _frontend_dir()
 
 @app.get("/")
 async def index():
-    """Serve the main HTML page."""
     index_file = FRONTEND_DIR / "index.html"
     if not index_file.exists():
-        raise HTTPException(
-            status_code=500,
-            detail=f"Frontend not found at {index_file}. "
-                   "If running from source, ensure 'frontend/index.html' exists. "
-                   "If running from .exe, the bundle may be corrupted.",
-        )
+        raise HTTPException(status_code=500, detail="Frontend not found")
     return FileResponse(index_file)
 
 
@@ -153,57 +141,45 @@ async def index():
 # ============================================================
 
 @app.get("/api/keys")
-async def list_keys(q: Optional[str] = Query(None, description="Optional search filter")):
-    """
-    List all user-level env vars with values masked.
-
-    Query params:
-        q: Optional case-insensitive substring filter on variable name.
-    """
-    env = read_all_user_env()
-
+async def list_managed_keys(q: Optional[str] = Query(None)):
+    """List ONLY managed keys (the default view)."""
+    env = read_managed_env()
     if q:
         q_lower = q.lower()
         env = {k: v for k, v in env.items() if q_lower in k.lower()}
 
     items = [
-        {
-            "name": name,
-            "masked_value": _mask_value(value),
-            "length": len(value),
-        }
+        {"name": name, "masked_value": _mask_value(value), "length": len(value)}
         for name, value in env.items()
     ]
-    # Sort alphabetically (case-insensitive)
     items.sort(key=lambda x: x["name"].upper())
-    return {"items": items, "count": len(items)}
+    return {"items": items, "count": len(items), "view": "managed"}
+
+
+@app.get("/api/discover")
+async def discover():
+    """Scan all user env vars and classify as LLM keys."""
+    result = discover_llm_keys()
+    # Strip value previews for skipped entries to avoid huge payloads
+    return result
 
 
 @app.get("/api/keys/{name}/value")
 async def get_key_value(name: str):
-    """
-    Get the actual unmasked value of a specific key.
-
-    This endpoint exists so the frontend can fetch the value on-demand
-    when the user clicks the eye icon. The list endpoint masks values
-    for safety.
-    """
-    env = read_all_user_env()
+    """Get the actual unmasked value of a managed key."""
+    env = read_managed_env()
     if name not in env:
-        raise HTTPException(status_code=404, detail=f"Key '{name}' not found")
+        raise HTTPException(status_code=404, detail=f"Managed key '{name}' not found")
     return {"name": name, "value": env[name]}
 
 
 @app.post("/api/keys", status_code=201)
 async def create_key(payload: KeyCreate):
-    """
-    Create a new env var. Returns 409 if name already exists.
-    """
-    env = read_all_user_env()
-    if payload.name in env:
+    """Create a new env var + auto-add to managed whitelist."""
+    if is_managed(payload.name):
         raise HTTPException(
             status_code=409,
-            detail=f"Key '{payload.name}' already exists. Use PUT to update.",
+            detail=f"Key '{payload.name}' is already managed. Use PUT to update.",
         )
     try:
         set_user_env(payload.name, payload.value)
@@ -214,9 +190,9 @@ async def create_key(payload: KeyCreate):
 
 @app.put("/api/keys/{name}")
 async def update_key(name: str, payload: KeyUpdate):
-    """
-    Update an existing env var (creates it if it doesn't exist).
-    """
+    """Update an existing managed env var."""
+    if not is_managed(name):
+        raise HTTPException(status_code=404, detail=f"Managed key '{name}' not found")
     try:
         set_user_env(name, payload.value)
     except (ValueError, NotImplementedError, OSError) as e:
@@ -226,33 +202,46 @@ async def update_key(name: str, payload: KeyUpdate):
 
 @app.delete("/api/keys/{name}")
 async def delete_key(name: str):
-    """
-    Delete an env var. Returns 404 if name doesn't exist.
-    """
+    """Delete a managed env var + remove from whitelist."""
+    if not is_managed(name):
+        raise HTTPException(status_code=404, detail=f"Managed key '{name}' not found")
     deleted = delete_user_env(name)
     if not deleted:
-        raise HTTPException(status_code=404, detail=f"Key '{name}' not found")
+        raise HTTPException(status_code=500, detail="Delete failed")
     return {"name": name, "ok": True}
+
+
+@app.post("/api/adopt")
+async def adopt(payload: AdoptRequest):
+    """
+    Adopt one or more keys into the managed whitelist.
+
+    The env vars must already exist; this just marks them as "manage these".
+    """
+    result = adopt_keys_bulk(payload.names)
+    return result
+
+
+@app.post("/api/unadopt")
+async def unadopt(payload: UnadoptRequest):
+    """
+    Remove a key from the managed whitelist. Does NOT delete the env var.
+
+    After unadopting, the key becomes invisible in the Managed view but
+    still exists in your environment. You can re-adopt it later.
+    """
+    removed = unadopt_key(payload.name)
+    return {"name": payload.name, "unadopted": removed}
 
 
 @app.get("/api/templates")
 async def list_templates():
-    """List all preset templates."""
     return {"templates": PRESET_TEMPLATES}
 
 
 @app.post("/api/import")
 async def import_env(payload: EnvImport):
-    """
-    Import .env content (KEY=VALUE per line).
-
-    Handles:
-      - Blank lines (skipped)
-      - Comment lines starting with # (skipped)
-      - Optional surrounding quotes on values (stripped)
-      - Invalid lines without '=' (skipped with reason)
-      - Per-line errors (recorded, doesn't abort batch)
-    """
+    """Import .env content. Each created key is auto-added to managed whitelist."""
     created: List[str] = []
     skipped: List[Dict[str, str]] = []
     errors: List[Dict[str, str]] = []
@@ -269,14 +258,13 @@ async def import_env(payload: EnvImport):
         name = name.strip()
         value = value.strip()
 
-        # Strip surrounding quotes (single or double)
         if len(value) >= 2:
             if (value[0] == '"' and value[-1] == '"') or \
                (value[0] == "'" and value[-1] == "'"):
                 value = value[1:-1]
 
         try:
-            set_user_env(name, value)
+            set_user_env(name, value)  # set_user_env auto-adds to managed
             created.append(name)
         except Exception as e:
             errors.append({"line": i, "content": line, "reason": str(e)})
@@ -293,17 +281,11 @@ async def import_env(payload: EnvImport):
 
 @app.post("/api/export", response_class=PlainTextResponse)
 async def export_env():
-    """
-    Export all user env vars as .env content (KEY=VALUE per line).
-
-    Values containing special chars (spaces, quotes, #, backslashes) are
-    double-quoted with internal quotes escaped.
-    """
-    env = read_all_user_env()
+    """Export MANAGED env vars only (not the full environment)."""
+    env = read_managed_env()
     lines = [
         "# Generated by LLM-Keyring",
-        f"# Total: {len(env)} variables",
-        "# Use with: source .env  (bash)  /  set -a; . ./.env; set +a  (POSIX)",
+        f"# Managed keys: {len(env)}",
         "",
     ]
     for name, value in sorted(env.items()):
@@ -317,7 +299,6 @@ async def export_env():
 
 @app.get("/api/info")
 async def info():
-    """Return platform and app info (useful for the frontend footer)."""
     return {
         "app": APP_NAME,
         "version": APP_VERSION,
@@ -326,6 +307,7 @@ async def info():
         "python": sys.version.split()[0],
         "frontend_dir": str(FRONTEND_DIR),
         "frozen": getattr(sys, "frozen", False),
+        "managed_count": len(get_managed_keys()),
     }
 
 
@@ -334,14 +316,6 @@ async def info():
 # ============================================================
 
 def _mask_value(value: str) -> str:
-    """
-    Mask sensitive value for list display.
-
-    Examples:
-        "sk-proj-abc123xyz"  →  "sk-p****xyz"
-        "short"              →  "****"
-        ""                   →  ""
-    """
     if not value:
         return ""
     if len(value) <= 8:
@@ -350,13 +324,6 @@ def _mask_value(value: str) -> str:
 
 
 def find_free_port(preferred: int, max_tries: int = MAX_PORT_TRIES) -> int:
-    """
-    Find a free TCP port starting from `preferred`.
-
-    There is a small race window between checking and binding — another process
-    could grab the port in between. uvicorn will retry on its own. For a
-    desktop app this is acceptable.
-    """
     for port in range(preferred, preferred + max_tries):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
@@ -364,19 +331,10 @@ def find_free_port(preferred: int, max_tries: int = MAX_PORT_TRIES) -> int:
                 return port
             except OSError:
                 continue
-    raise RuntimeError(
-        f"No free port found in range {preferred}–{preferred + max_tries - 1}. "
-        "Close some apps or restart your computer."
-    )
+    raise RuntimeError(f"No free port found in range {preferred}–{preferred + max_tries - 1}")
 
 
 def open_browser_when_ready(url: str, delay: float = 1.5):
-    """
-    Open the default browser to `url` after `delay` seconds.
-
-    Runs in a daemon thread so it doesn't block the main process. The delay
-    gives uvicorn time to start accepting connections.
-    """
     def _open():
         time.sleep(delay)
         try:
@@ -391,7 +349,6 @@ def open_browser_when_ready(url: str, delay: float = 1.5):
 # ============================================================
 
 def main():
-    """Start the LLM-Keyring server."""
     port = find_free_port(PREFERRED_PORT)
     url = f"http://{HOST}:{port}"
 
@@ -403,13 +360,13 @@ def main():
     print()
     print(f"  Platform : {platform.system()} {platform.release()}")
     print(f"  Python   : {sys.version.split()[0]}")
+    print(f"  Managed  : {len(get_managed_keys())} key(s)")
     print(f"  URL      : {url}")
     print()
     print("  Press Ctrl+C to stop the server.")
     print("=" * 64)
     print()
 
-    # Open browser after a short delay (lets server bind first)
     open_browser_when_ready(url)
 
     uvicorn.run(

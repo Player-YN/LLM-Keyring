@@ -6,513 +6,963 @@
   <title>LLM-Keyring</title>
   <meta name="description" content="Manage LLM API keys as OS environment variables, from your browser.">
 
-  <!-- TailwindCSS via CDN (single dev/prod build) -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Inter font (Apple-style alternative) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Lucide Icons (outline style, like Apple's SF Symbols) -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
 
   <!-- Alpine.js for reactivity -->
   <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
-  <!-- Favicon (emoji 🔑 as inline SVG, no extra request) -->
+  <!-- Favicon -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔑</text></svg>">
 
-  <script>
-    // Tailwind config — dark mode toggleable via .dark on <html>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
-            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
-          }
-        }
-      }
-    }
-  </script>
-
   <style>
-    /* Alpine.js x-cloak — hide elements until Alpine initializes */
+    /* ===== Apple-style base ===== */
+    :root {
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', 'Noto Sans SC', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 16px;
+      --radius-xl: 20px;
+      --transition: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    * { box-sizing: border-box; }
+    html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+    body {
+      font-family: var(--font-sans);
+      letter-spacing: -0.011em;
+    }
+    code, .mono { font-family: var(--font-mono); }
+
     [x-cloak] { display: none !important; }
 
-    /* Custom scrollbar */
-    .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
-    .custom-scroll::-webkit-scrollbar-track { background: transparent; }
-    .custom-scroll::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.3); border-radius: 4px; }
-    .custom-scroll::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.5); }
+    /* ===== Light theme (Apple-like) ===== */
+    .theme-light {
+      --bg-base: #f5f5f7;
+      --bg-card: rgba(255, 255, 255, 0.85);
+      --bg-card-solid: #ffffff;
+      --bg-hover: rgba(0, 0, 0, 0.04);
+      --bg-input: rgba(120, 120, 128, 0.08);
+      --border: rgba(60, 60, 67, 0.12);
+      --border-strong: rgba(60, 60, 67, 0.2);
+      --text-primary: #1d1d1f;
+      --text-secondary: #6e6e73;
+      --text-tertiary: #8e8e93;
+      --accent: #007aff;
+      --accent-hover: #0a84ff;
+      --success: #34c759;
+      --error: #ff3b30;
+      --warning: #ff9500;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.08);
+      --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.12);
+    }
 
-    /* Smooth toast animation */
-    @keyframes slideDown {
-      from { transform: translate(-50%, -100%); opacity: 0; }
+    /* ===== Dark theme (Apple "Pro" dark) ===== */
+    .theme-dark {
+      --bg-base: #000000;
+      --bg-card: rgba(28, 28, 30, 0.75);
+      --bg-card-solid: #1c1c1e;
+      --bg-hover: rgba(255, 255, 255, 0.06);
+      --bg-input: rgba(118, 118, 128, 0.24);
+      --border: rgba(255, 255, 255, 0.1);
+      --border-strong: rgba(255, 255, 255, 0.18);
+      --text-primary: #f5f5f7;
+      --text-secondary: #98989d;
+      --text-tertiary: #636366;
+      --accent: #0a84ff;
+      --accent-hover: #409cff;
+      --success: #30d158;
+      --error: #ff453a;
+      --warning: #ff9f0a;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+      --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4);
+      --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      transition: background var(--transition), color var(--transition);
+    }
+
+    /* ===== Glass card ===== */
+    .glass {
+      background: var(--bg-card);
+      backdrop-filter: saturate(180%) blur(20px);
+      -webkit-backdrop-filter: saturate(180%) blur(20px);
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ===== Buttons ===== */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: var(--radius-md);
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: -0.01em;
+      transition: all var(--transition);
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      color: var(--text-primary);
+      user-select: none;
+    }
+    .btn:hover { background: var(--bg-hover); }
+    .btn:active { transform: scale(0.97); }
+
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+    }
+    .btn-primary:hover { background: var(--accent-hover); }
+
+    .btn-danger {
+      background: var(--error);
+      color: white;
+    }
+
+    .btn-icon {
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      justify-content: center;
+      border-radius: var(--radius-sm);
+    }
+
+    /* ===== Inputs ===== */
+    .input {
+      width: 100%;
+      padding: 9px 12px;
+      font-size: 13px;
+      background: var(--bg-input);
+      border: 1px solid transparent;
+      border-radius: var(--radius-md);
+      color: var(--text-primary);
+      outline: none;
+      transition: all var(--transition);
+      font-family: var(--font-sans);
+    }
+    .input::placeholder { color: var(--text-tertiary); }
+    .input:focus {
+      background: var(--bg-card-solid);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.15);
+    }
+
+    /* ===== Toast (top, slide-down) ===== */
+    .toast {
+      position: fixed;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      padding: 10px 18px;
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      font-size: 13px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      animation: toastIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .toast-success { background: rgba(52, 199, 89, 0.95); color: white; }
+    .toast-error { background: rgba(255, 59, 48, 0.95); color: white; }
+    .toast-info { background: rgba(28, 28, 30, 0.92); color: white; }
+    @keyframes toastIn {
+      from { transform: translate(-50%, -120%); opacity: 0; }
       to { transform: translate(-50%, 0); opacity: 1; }
     }
-    .toast-anim { animation: slideDown 0.2s ease-out; }
 
-    /* Subtle row hover */
-    .row-hover { transition: background-color 0.1s ease; }
+    /* ===== Modal ===== */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      animation: fadeIn 0.2s ease;
+    }
+    .modal {
+      background: var(--bg-card-solid);
+      border-radius: var(--radius-xl);
+      width: 100%;
+      max-width: 440px;
+      max-height: 85vh;
+      overflow: hidden;
+      box-shadow: var(--shadow-lg);
+      animation: modalIn 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes modalIn {
+      from { transform: scale(0.95); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+
+    /* ===== Sidebar template item hover ===== */
+    .template-item {
+      transition: all var(--transition);
+      cursor: pointer;
+    }
+    .template-item:hover {
+      background: var(--bg-hover);
+    }
+
+    /* ===== Tab pill (Managed / Discover) ===== */
+    .tab-pill {
+      display: inline-flex;
+      padding: 2px;
+      background: var(--bg-input);
+      border-radius: 999px;
+      gap: 2px;
+    }
+    .tab-pill button {
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 999px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .tab-pill button.active {
+      background: var(--bg-card-solid);
+      color: var(--text-primary);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ===== Confidence dot ===== */
+    .confidence-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .conf-high { background: #34c759; }
+    .conf-medium { background: #ff9500; }
+    .conf-low { background: #8e8e93; }
+
+    /* ===== Scrollbar ===== */
+    .nice-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .nice-scroll::-webkit-scrollbar-track { background: transparent; }
+    .nice-scroll::-webkit-scrollbar-thumb { background: rgba(120, 120, 128, 0.3); border-radius: 3px; }
+
+    /* ===== Row hover ===== */
+    .row { transition: background var(--transition); }
+    .row:hover { background: var(--bg-hover); }
+
+    /* ===== i18n visibility ===== */
+    [data-lang="en"] .i18n-zh { display: none; }
+    [data-lang="zh"] .i18n-en { display: none; }
   </style>
 </head>
 
 <body
-  class="h-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased"
+  class="theme-light h-full"
+  data-lang="en"
   x-data="keyring()"
   x-init="init()"
   x-cloak
 >
+
   <!-- ============ TOAST ============ -->
-  <div
-    x-show="toast.visible"
-    x-transition.duration.200ms
-    class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-anim"
-    style="display: none;"
-  >
+  <template x-if="toast.visible">
     <div
-      class="px-4 py-3 rounded-lg shadow-lg border max-w-md flex items-center gap-3"
-      :class="{
-        'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700': toast.type === 'info',
-        'bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-100': toast.type === 'success',
-        'bg-rose-50 dark:bg-rose-950 border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-100': toast.type === 'error'
-      }"
+      class="toast"
+      :class="`toast-${toast.type}`"
+      x-transition.opacity.duration.150ms
     >
-      <span x-text="toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ⓘ'" class="text-lg"></span>
-      <span x-text="toast.message" class="text-sm font-medium"></span>
+      <span x-text="toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ⓘ'"></span>
+      <span x-text="toast.message"></span>
     </div>
-  </div>
+  </template>
 
   <!-- ============ HEADER ============ -->
-  <header class="sticky top-0 z-30 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200 dark:border-slate-800">
-    <div class="max-w-7xl mx-auto px-6 py-3 flex items-center gap-4">
-      <!-- Logo + title -->
-      <div class="flex items-center gap-2">
-        <span class="text-2xl">🔑</span>
+  <header class="sticky top-0 z-30 glass">
+    <div class="max-w-6xl mx-auto px-6 h-14 flex items-center gap-4">
+
+      <!-- Logo -->
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-sm shadow-sm">
+          🔑
+        </div>
         <div>
-          <h1 class="text-base font-semibold tracking-tight">LLM-Keyring</h1>
-          <p class="text-xs text-slate-500 dark:text-slate-400 -mt-0.5">v0.1.0 · Manage LLM keys as OS env vars</p>
+          <div class="text-[14px] font-semibold tracking-tight leading-tight">
+            <span class="i18n-en">LLM-Keyring</span>
+            <span class="i18n-zh">LLM-Keyring</span>
+          </div>
+          <div class="text-[11px] text-secondary -mt-0.5" style="color: var(--text-tertiary);">
+            <span class="i18n-en">v0.2.0 · Only what you manage</span>
+            <span class="i18n-zh">v0.2.0 · 只管理你标记的</span>
+          </div>
         </div>
       </div>
 
-      <!-- Search -->
-      <div class="flex-1 max-w-xl mx-4">
-        <div class="relative">
-          <input
-            type="text"
-            x-model="search"
-            @input="filterKeys()"
-            placeholder="Search keys (try: openai, hf, ark)..."
-            class="w-full pl-10 pr-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder:text-slate-400"
-          />
-          <svg class="absolute left-3 top-2.5 w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-          </svg>
-        </div>
+      <!-- Spacer -->
+      <div class="flex-1"></div>
+
+      <!-- View switcher (Managed / Discover) -->
+      <div class="tab-pill">
+        <button
+          :class="{ active: view === 'managed' }"
+          @click="switchView('managed')"
+        >
+          <i data-lucide="shield-check" class="w-3.5 h-3.5"></i>
+          <span class="i18n-en">Managed</span>
+          <span class="i18n-zh">已管理</span>
+          <span x-show="managedKeys.length > 0" x-text="managedKeys.length" class="text-[10px] opacity-60"></span>
+        </button>
+        <button
+          :class="{ active: view === 'discover' }"
+          @click="switchView('discover')"
+        >
+          <i data-lucide="search" class="w-3.5 h-3.5"></i>
+          <span class="i18n-en">Discover</span>
+          <span class="i18n-zh">发现</span>
+          <span x-show="discover.adoptable.length > 0" x-text="discover.adoptable.length" class="text-[10px] opacity-60" style="background: var(--success); color: white; border-radius: 999px; padding: 0 5px;"></span>
+        </button>
       </div>
 
-      <!-- Actions -->
-      <div class="flex items-center gap-2">
-        <button
-          @click="toggleSidebar()"
-          class="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-          title="Toggle template sidebar"
-        >
-          <span x-show="!sidebarOpen">Templates ▸</span>
-          <span x-show="sidebarOpen" style="display:none;">◂ Templates</span>
+      <!-- Action buttons -->
+      <div class="flex items-center gap-1">
+        <button @click="openImport()" class="btn btn-icon" title="Import .env">
+          <i data-lucide="upload" class="w-4 h-4"></i>
         </button>
-        <button
-          @click="openImport()"
-          class="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-          title="Import .env"
-        >
-          Import
+        <button @click="exportEnv()" class="btn btn-icon" :title="t('export')">
+          <i data-lucide="download" class="w-4 h-4"></i>
         </button>
-        <button
-          @click="exportEnv()"
-          class="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-          title="Export .env"
-        >
-          Export
-        </button>
-        <button
-          @click="openAdd()"
-          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
-        >
-          + Add Key
-        </button>
-        <button
-          @click="toggleDark()"
-          class="px-2 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-          :title="dark ? 'Switch to light mode' : 'Switch to dark mode'"
-        >
-          <span x-text="dark ? '☀' : '🌙'"></span>
+        <button @click="openAdd()" class="btn btn-primary" style="padding: 7px 14px;">
+          <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+          <span class="i18n-en">Add Key</span>
+          <span class="i18n-zh">添加 Key</span>
         </button>
       </div>
+
+      <!-- Language toggle -->
+      <button
+        @click="toggleLang()"
+        class="btn"
+        style="padding: 7px 10px; font-size: 12px;"
+        title="Switch language"
+      >
+        <span x-text="lang === 'en' ? 'EN' : '中'"></span>
+        <span style="opacity: 0.4;">|</span>
+        <span :style="{ color: lang === 'en' ? 'var(--text-tertiary)' : 'var(--text-primary)' }">EN</span>
+        <span :style="{ color: lang === 'zh' ? 'var(--text-primary)' : 'var(--text-tertiary)' }">中</span>
+      </button>
+
+      <!-- Theme toggle -->
+      <button
+        @click="toggleDark()"
+        class="btn btn-icon"
+        :title="dark ? t('lightMode') : t('darkMode')"
+      >
+        <i :data-lucide="dark ? 'sun' : 'moon'" class="w-4 h-4"></i>
+      </button>
     </div>
   </header>
 
   <!-- ============ MAIN ============ -->
-  <div class="flex max-w-7xl mx-auto px-6 py-6 gap-6">
+  <main class="max-w-6xl mx-auto px-6 py-8">
 
-    <!-- Sidebar: preset templates -->
-    <aside
-      x-show="sidebarOpen"
-      x-transition.opacity.duration.200ms
-      class="w-72 shrink-0"
-      style="display: none;"
-    >
-      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden sticky top-20">
-        <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+    <!-- ============ MANAGED VIEW ============ -->
+    <div x-show="view === 'managed'" x-transition.opacity.duration.150ms>
+
+      <!-- Search bar -->
+      <div class="mb-5 flex items-center gap-3">
+        <div class="flex-1 relative">
+          <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2" style="color: var(--text-tertiary);"></i>
           <input
             type="text"
-            x-model="templateSearch"
-            placeholder="Search templates..."
-            class="w-full px-3 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder:text-slate-400"
+            x-model="search"
+            class="input"
+            style="padding-left: 36px;"
+            :placeholder="t('searchKeys')"
           />
         </div>
-        <div class="max-h-[calc(100vh-12rem)] overflow-y-auto custom-scroll">
-          <template x-for="(group, category) in groupedTemplates()" :key="category">
-            <div class="py-2">
-              <h3 class="px-4 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider" x-text="category"></h3>
-              <template x-for="t in group" :key="t.name">
-                <button
-                  @click="applyTemplate(t)"
-                  class="w-full px-4 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition flex items-center justify-between gap-2 group"
-                >
-                  <div class="min-w-0 flex-1">
-                    <div class="text-sm font-mono truncate" x-text="t.name"></div>
-                    <div class="text-xs text-slate-500 dark:text-slate-400 truncate" x-text="t.provider"></div>
-                  </div>
-                  <span class="text-xs text-slate-400 opacity-0 group-hover:opacity-100 transition">→</span>
-                </button>
-              </template>
-            </div>
-          </template>
-          <div x-show="filteredTemplates().length === 0" class="px-4 py-8 text-center text-sm text-slate-400">
-            No templates match
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- Main: key list -->
-    <main class="flex-1 min-w-0">
-      <!-- Stats bar -->
-      <div class="mb-4 flex items-baseline justify-between">
-        <h2 class="text-sm font-medium text-slate-700 dark:text-slate-300">
-          <span x-text="filteredKeys.length"></span>
-          <span x-text="filteredKeys.length === 1 ? 'key' : 'keys'"></span>
-          <span x-show="search" class="text-slate-400">
-            matching "<span x-text="search"></span>"
-          </span>
-        </h2>
-        <button
-          @click="refresh()"
-          class="text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition flex items-center gap-1"
-          title="Refresh from registry"
-        >
-          <span x-text="loading ? '⟳' : '↻'"></span>
-          <span x-text="loading ? 'Loading...' : 'Refresh'"></span>
+        <button @click="refresh()" class="btn">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+          <span x-text="t('refresh')"></span>
         </button>
       </div>
 
       <!-- Empty state -->
       <div
-        x-show="!loading && filteredKeys.length === 0"
-        class="bg-white dark:bg-slate-900 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-12 text-center"
+        x-show="!loading && filteredManagedKeys.length === 0"
+        class="glass rounded-2xl p-16 text-center"
       >
-        <div class="text-5xl mb-4">🔑</div>
-        <h3 class="text-base font-medium mb-1" x-text="search ? 'No keys match your search' : 'No environment variables yet'"></h3>
-        <p class="text-sm text-slate-500 dark:text-slate-400 mb-4" x-show="!search">
-          Add your first API key to get started, or pick a template from the sidebar.
-        </p>
-        <button
-          x-show="!search"
-          @click="openAdd()"
-          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
-        >
-          + Add Your First Key
-        </button>
+        <div class="w-16 h-16 mx-auto mb-5 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-purple-600/20 flex items-center justify-center text-3xl">
+          🔑
+        </div>
+        <h3 class="text-[17px] font-semibold mb-1.5" x-text="search ? t('noMatch') : t('emptyTitle')"></h3>
+        <p class="text-[13px] mb-6" style="color: var(--text-secondary);" x-show="!search" x-text="t('emptyDesc')"></p>
+        <div class="flex items-center justify-center gap-2" x-show="!search">
+          <button @click="openAdd()" class="btn btn-primary">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            <span x-text="t('addFirst')"></span>
+          </button>
+          <button
+            @click="switchView('discover')"
+            class="btn"
+            x-show="discover.adoptable.length > 0"
+          >
+            <i data-lucide="search" class="w-3.5 h-3.5"></i>
+            <span x-text="t('discoverN').replace('{n}', discover.adoptable.length)"></span>
+          </button>
+        </div>
       </div>
 
       <!-- Key list -->
-      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        <template x-for="(key, idx) in filteredKeys" :key="key.name">
+      <div class="glass rounded-2xl overflow-hidden">
+        <template x-for="(key, idx) in filteredManagedKeys" :key="key.name">
           <div
-            :class="idx > 0 ? 'border-t border-slate-100 dark:border-slate-800' : ''"
-            class="row-hover px-5 py-3.5 flex items-center gap-4 group"
+            :class="idx > 0 ? '' : ''"
+            class="row px-5 py-4 flex items-center gap-4 group"
+            :style="idx > 0 ? 'border-top: 1px solid var(--border);' : ''"
           >
+            <!-- Icon -->
+            <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+                 style="background: linear-gradient(135deg, rgba(99, 102, 241, 0.15), rgba(168, 85, 247, 0.15));">
+              <i data-lucide="key" class="w-4 h-4" style="color: var(--accent);"></i>
+            </div>
+
             <!-- Name + masked value -->
             <div class="flex-1 min-w-0">
               <div class="flex items-baseline gap-2">
-                <code class="font-mono text-sm font-semibold truncate" x-text="key.name"></code>
-                <span class="text-xs text-slate-400" x-text="key.length + ' chars'"></span>
+                <code class="mono text-[13px] font-semibold truncate" x-text="key.name"></code>
+                <span class="text-[11px]" style="color: var(--text-tertiary);" x-text="key.length + ' ' + t('chars')"></span>
               </div>
-              <div class="flex items-center gap-2 mt-0.5">
-                <code class="font-mono text-xs text-slate-500 dark:text-slate-400 truncate" x-text="key.masked_value"></code>
+              <div class="mt-0.5">
+                <code class="mono text-[11.5px]" style="color: var(--text-secondary);" x-text="key.masked_value"></code>
               </div>
             </div>
 
             <!-- Actions -->
-            <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition">
-              <button
-                @click="copyValue(key.name)"
-                class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-                title="Copy value to clipboard"
-              >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
-                </svg>
+            <div class="flex items-center gap-0.5 opacity-50 group-hover:opacity-100 transition">
+              <button @click="copyValue(key.name)" class="btn btn-icon" :title="t('copy')">
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
               </button>
-              <button
-                @click="showValue(key.name)"
-                class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-                title="Show full value"
-              >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
-                </svg>
+              <button @click="showValue(key.name)" class="btn btn-icon" :title="t('show')">
+                <i data-lucide="eye" class="w-3.5 h-3.5"></i>
               </button>
-              <button
-                @click="openEdit(key.name)"
-                class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-                title="Edit value"
-              >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
-                </svg>
+              <button @click="openEdit(key.name)" class="btn btn-icon" :title="t('edit')">
+                <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
               </button>
-              <button
-                @click="confirmDelete(key.name)"
-                class="p-2 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950 hover:text-rose-600 dark:hover:text-rose-400 transition"
-                title="Delete key"
-              >
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
-                </svg>
+              <button @click="confirmDelete(key.name)" class="btn btn-icon" :title="t('delete')">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
               </button>
             </div>
           </div>
         </template>
       </div>
 
-      <!-- Footer info -->
-      <div class="mt-6 text-center text-xs text-slate-400">
-        <p>
-          🔑 LLM-Keyring · Keys are stored as Windows User environment variables
-          <span x-show="info && info.platform !== 'Windows'" class="text-amber-500">
-            · ⚠ Running on <span x-text="info?.platform"></span> (read-only mode)
-          </span>
-        </p>
+      <!-- Tip when empty + has discoverable -->
+      <div
+        x-show="managedKeys.length === 0 && discover.adoptable.length > 0 && !loading"
+        class="mt-5 glass rounded-2xl p-5 flex items-start gap-3"
+        style="background: linear-gradient(135deg, rgba(52, 199, 89, 0.08), rgba(10, 132, 255, 0.08));"
+      >
+        <i data-lucide="sparkles" class="w-5 h-5 mt-0.5" style="color: var(--success);"></i>
+        <div class="flex-1">
+          <p class="text-[13px] font-medium" x-text="t('tipFound').replace('{n}', discover.adoptable.length)"></p>
+          <p class="text-[12px] mt-0.5" style="color: var(--text-secondary);" x-text="t('tipFoundDesc')"></p>
+        </div>
+        <button @click="switchView('discover')" class="btn btn-primary">
+          <span x-text="t('viewDiscover')"></span>
+          <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+        </button>
       </div>
-    </main>
-  </div>
+    </div>
+
+    <!-- ============ DISCOVER VIEW ============ -->
+    <div x-show="view === 'discover'" x-transition.opacity.duration.150ms>
+
+      <!-- Discover intro -->
+      <div class="mb-5 glass rounded-2xl p-5">
+        <div class="flex items-start gap-3">
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+               style="background: linear-gradient(135deg, rgba(10, 132, 255, 0.15), rgba(52, 199, 89, 0.15));">
+            <i data-lucide="radar" class="w-5 h-5" style="color: var(--accent);"></i>
+          </div>
+          <div class="flex-1">
+            <h3 class="text-[14px] font-semibold mb-1" x-text="t('discoverTitle')"></h3>
+            <p class="text-[12.5px]" style="color: var(--text-secondary);" x-text="t('discoverDesc')"></p>
+          </div>
+          <button @click="loadDiscover()" class="btn" :disabled="discoverLoading">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5" :class="discoverLoading ? 'animate-spin' : ''"></i>
+            <span x-text="t('rescan')"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Auto-adoptable -->
+      <template x-if="discover.adoptable.length > 0">
+        <div class="mb-5">
+          <div class="flex items-baseline justify-between mb-3">
+            <h3 class="text-[13px] font-semibold flex items-center gap-2">
+              <span class="confidence-dot conf-high"></span>
+              <span class="i18n-en">High Confidence</span>
+              <span class="i18n-zh">高置信度</span>
+              <span class="text-[11px] font-normal" style="color: var(--text-tertiary);" x-text="discover.adoptable.length + ' ' + t('keys')"></span>
+            </h3>
+            <button @click="adoptAll()" class="btn btn-primary" style="padding: 5px 12px; font-size: 12px;">
+              <i data-lucide="plus" class="w-3 h-3"></i>
+              <span x-text="t('adoptAll')"></span>
+            </button>
+          </div>
+          <div class="glass rounded-2xl overflow-hidden">
+            <template x-for="(key, idx) in discover.adoptable" :key="key.name">
+              <div
+                class="row px-5 py-3.5 flex items-center gap-3"
+                :style="idx > 0 ? 'border-top: 1px solid var(--border);' : ''"
+              >
+                <span class="confidence-dot conf-high"></span>
+                <div class="flex-1 min-w-0">
+                  <code class="mono text-[13px] font-medium" x-text="key.name"></code>
+                  <div class="text-[11px]" style="color: var(--text-secondary);" x-text="key.reasons[0]"></div>
+                </div>
+                <code class="mono text-[11px] hidden sm:block" style="color: var(--text-tertiary);" x-text="key.value_preview"></code>
+                <button @click="adoptKey(key.name)" class="btn btn-primary" style="padding: 5px 12px; font-size: 12px;">
+                  <span x-text="t('adopt')"></span>
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- Review (medium conf) -->
+      <template x-if="discover.review.length > 0">
+        <div class="mb-5">
+          <h3 class="text-[13px] font-semibold mb-3 flex items-center gap-2">
+            <span class="confidence-dot conf-medium"></span>
+            <span class="i18n-en">Please Verify</span>
+            <span class="i18n-zh">请人工确认</span>
+            <span class="text-[11px] font-normal" style="color: var(--text-tertiary);" x-text="discover.review.length + ' ' + t('keys')"></span>
+          </h3>
+          <div class="glass rounded-2xl overflow-hidden">
+            <template x-for="(key, idx) in discover.review" :key="key.name">
+              <div
+                class="row px-5 py-3.5 flex items-center gap-3"
+                :style="idx > 0 ? 'border-top: 1px solid var(--border);' : ''"
+              >
+                <span class="confidence-dot conf-medium"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center gap-2">
+                    <code class="mono text-[13px] font-medium" x-text="key.name"></code>
+                    <span x-show="key.is_managed" class="text-[10px] px-1.5 py-0.5 rounded-md" style="background: var(--bg-input); color: var(--text-secondary);" x-text="t('alreadyManaged')"></span>
+                  </div>
+                  <div class="text-[11px]" style="color: var(--text-secondary);">
+                    <span x-text="key.reasons.join(' · ') || t('unclearMatch')"></span>
+                  </div>
+                </div>
+                <button
+                  @click="adoptKey(key.name)"
+                  class="btn"
+                  style="padding: 5px 12px; font-size: 12px;"
+                  x-show="!key.is_managed"
+                  x-text="t('adopt')"
+                ></button>
+                <button
+                  @click="unadoptKey(key.name)"
+                  class="btn"
+                  style="padding: 5px 12px; font-size: 12px; color: var(--text-secondary);"
+                  x-show="key.is_managed"
+                  x-text="t('remove')"
+                ></button>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
+
+      <!-- Nothing found -->
+      <template x-if="discover.adoptable.length === 0 && discover.review.length === 0">
+        <div class="glass rounded-2xl p-12 text-center">
+          <i data-lucide="check-circle" class="w-12 h-12 mx-auto mb-3" style="color: var(--success);"></i>
+          <h3 class="text-[15px] font-semibold mb-1.5" x-text="t('allCaughtUp')"></h3>
+          <p class="text-[13px]" style="color: var(--text-secondary);" x-text="t('allCaughtUpDesc').replace('{total}', discover.total_scanned)"></p>
+        </div>
+      </template>
+
+      <!-- Always show: manual add -->
+      <div class="glass rounded-2xl p-5 mt-5" style="border-style: dashed;">
+        <div class="flex items-start gap-3">
+          <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0"
+               style="background: var(--bg-input);">
+            <i data-lucide="plus-circle" class="w-4 h-4" style="color: var(--text-secondary);"></i>
+          </div>
+          <div class="flex-1">
+            <h4 class="text-[13px] font-semibold mb-0.5" x-text="t('customTitle')"></h4>
+            <p class="text-[12px]" style="color: var(--text-secondary);" x-text="t('customDesc')"></p>
+          </div>
+          <button @click="openAdd()" class="btn">
+            <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            <span x-text="t('addManually')"></span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Skipped count footer -->
+      <div class="mt-5 text-center text-[12px]" style="color: var(--text-tertiary);">
+        <span x-text="t('skippedCount').replace('{n}', discover.skipped_count).replace('{total}', discover.total_scanned)"></span>
+        ·
+        <button @click="showSkipped = !showSkipped" class="underline" x-text="showSkipped ? t('hide') : t('show')"></button>
+      </div>
+
+      <!-- Hidden skipped detail -->
+      <template x-if="showSkipped">
+        <div class="mt-3 glass rounded-xl p-4 text-[11px] mono" style="color: var(--text-tertiary);">
+          <p x-text="t('skippedNote')"></p>
+        </div>
+      </template>
+    </div>
+
+    <!-- ============ TEMPLATE SIDEBAR (overlay on Managed view) ============ -->
+    <div
+      x-show="templatesOpen"
+      x-transition.opacity
+      @click.self="templatesOpen = false"
+      class="fixed inset-0 z-40 flex justify-end"
+      style="background: rgba(0,0,0,0.3); backdrop-filter: blur(8px);"
+    >
+      <aside
+        x-show="templatesOpen"
+        x-transition:enter="transition ease-out duration-200"
+        x-transition:enter-start="translate-x-full"
+        x-transition:enter-end="translate-x-0"
+        class="w-80 max-w-[85vw] h-full overflow-y-auto nice-scroll"
+        style="background: var(--bg-card-solid); border-left: 1px solid var(--border);"
+      >
+        <div class="sticky top-0 px-5 py-4 flex items-center justify-between" style="background: var(--bg-card-solid); border-bottom: 1px solid var(--border);">
+          <h3 class="text-[14px] font-semibold" x-text="t('templates')"></h3>
+          <button @click="templatesOpen = false" class="btn btn-icon">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+
+        <div class="px-4 py-3">
+          <input
+            type="text"
+            x-model="templateSearch"
+            class="input"
+            :placeholder="t('searchTemplates')"
+          />
+        </div>
+
+        <template x-for="(group, category) in groupedTemplates()" :key="category">
+          <div class="py-2">
+            <h4 class="px-5 py-1.5 text-[10.5px] font-semibold uppercase tracking-wider" style="color: var(--text-tertiary);" x-text="category"></h4>
+            <template x-for="t in group" :key="t.name">
+              <div
+                @click="applyTemplate(t)"
+                class="template-item px-5 py-2 flex items-center justify-between"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="mono text-[12.5px] truncate" x-text="t.name"></div>
+                  <div class="text-[11px] truncate" style="color: var(--text-secondary);" x-text="t.provider"></div>
+                </div>
+                <i data-lucide="plus" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-100" style="color: var(--text-tertiary);"></i>
+              </div>
+            </template>
+          </div>
+        </template>
+
+        <div x-show="filteredTemplates().length === 0" class="px-5 py-8 text-center text-[12px]" style="color: var(--text-tertiary);">
+          <span x-text="t('noTemplates')"></span>
+        </div>
+      </aside>
+    </div>
+
+    <!-- Floating template button (Managed view only) -->
+    <button
+      x-show="view === 'managed'"
+      @click="templatesOpen = true"
+      class="fixed bottom-6 right-6 w-12 h-12 rounded-full btn-primary flex items-center justify-center"
+      style="box-shadow: var(--shadow-lg); padding: 0;"
+      :title="t('templates')"
+    >
+      <i data-lucide="bookmark" class="w-5 h-5"></i>
+    </button>
+  </main>
 
   <!-- ============ MODAL: Add / Edit ============ -->
-  <div
-    x-show="modal.open"
-    x-transition.opacity
-    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-    @keydown.escape.window="closeModal()"
-    style="display: none;"
-  >
-    <div
-      @click.outside="closeModal()"
-      x-transition
-      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-md overflow-hidden"
-    >
-      <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
-        <h3 class="text-base font-semibold" x-text="modal.mode === 'edit' ? 'Edit Key' : 'Add New Key'"></h3>
+  <div x-show="modal.open" class="modal-overlay" @click.self="closeModal()" @keydown.escape.window="closeModal()" x-transition.opacity>
+    <div class="modal">
+      <div class="px-6 pt-5 pb-3">
+        <h3 class="text-[16px] font-semibold" x-text="modal.mode === 'edit' ? t('editKey') : t('addNewKey')"></h3>
       </div>
-
-      <div class="px-6 py-5 space-y-4">
+      <div class="px-6 py-3 space-y-4">
         <div>
-          <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 uppercase tracking-wide">Name</label>
+          <label class="block text-[11px] font-medium uppercase tracking-wide mb-1.5" style="color: var(--text-secondary);" x-text="t('name')"></label>
           <input
             type="text"
             x-model="modal.name"
             :disabled="modal.mode === 'edit'"
             placeholder="OPENAI_API_KEY"
-            class="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed"
+            class="input mono"
+            style="font-size: 13px;"
           />
-          <p x-show="modal.error" x-text="modal.error" class="text-xs text-rose-600 mt-1"></p>
+          <p x-show="modal.error" x-text="modal.error" class="text-[11px] mt-1" style="color: var(--error);"></p>
         </div>
-
         <div>
-          <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 uppercase tracking-wide">Value</label>
+          <label class="block text-[11px] font-medium uppercase tracking-wide mb-1.5" style="color: var(--text-secondary);" x-text="t('value')"></label>
           <div class="relative">
             <input
               :type="modal.showValue ? 'text' : 'password'"
               x-model="modal.value"
               @keydown.enter="submitModal()"
               placeholder="sk-..."
-              class="w-full px-3 py-2 pr-20 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              class="input mono pr-16"
+              style="font-size: 13px;"
             />
             <button
               type="button"
               @click="modal.showValue = !modal.showValue"
-              class="absolute right-2 top-1.5 px-2 py-1 text-xs rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition"
-              x-text="modal.showValue ? 'Hide' : 'Show'"
+              class="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 py-1 text-[11px] rounded"
+              style="color: var(--text-secondary);"
+              x-text="modal.showValue ? t('hide') : t('show')"
             ></button>
           </div>
         </div>
-
-        <div x-show="modal.mode === 'create'" class="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 rounded-md p-3">
-          💡 Tip: Pick a preset from the sidebar to auto-fill the name.
-        </div>
       </div>
-
-      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
-        <button
-          @click="closeModal()"
-          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-        >
-          Cancel
-        </button>
-        <button
-          @click="submitModal()"
-          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
-        >
-          <span x-text="modal.mode === 'edit' ? 'Update' : 'Add'"></span>
-        </button>
+      <div class="px-6 py-4 flex justify-end gap-2" style="background: var(--bg-input);">
+        <button @click="closeModal()" class="btn" x-text="t('cancel')"></button>
+        <button @click="submitModal()" class="btn btn-primary" x-text="modal.mode === 'edit' ? t('update') : t('add')"></button>
       </div>
     </div>
   </div>
 
   <!-- ============ MODAL: Show Value ============ -->
-  <div
-    x-show="showValueModal.open"
-    x-transition.opacity
-    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-    @keydown.escape.window="showValueModal.open = false"
-    style="display: none;"
-  >
-    <div
-      @click.outside="showValueModal.open = false"
-      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg overflow-hidden"
-    >
-      <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
-        <h3 class="text-base font-semibold">Value of <code class="font-mono text-indigo-600 dark:text-indigo-400" x-text="showValueModal.name"></code></h3>
+  <div x-show="showValueModal.open" class="modal-overlay" @click.self="showValueModal.open = false" @keydown.escape.window="showValueModal.open = false" x-transition.opacity>
+    <div class="modal" style="max-width: 500px;">
+      <div class="px-6 pt-5 pb-3 flex items-center justify-between">
+        <h3 class="text-[16px] font-semibold"><code class="mono" x-text="showValueModal.name"></code></h3>
+        <button @click="showValueModal.open = false" class="btn btn-icon"><i data-lucide="x" class="w-4 h-4"></i></button>
       </div>
-      <div class="px-6 py-5">
-        <div class="relative">
-          <textarea
-            readonly
-            x-model="showValueModal.value"
-            rows="4"
-            class="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none resize-none"
-          ></textarea>
-        </div>
-        <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">
-          ⚠ This value is sensitive. Don't share screenshots.
-        </p>
+      <div class="px-6 py-3">
+        <textarea
+          readonly
+          x-model="showValueModal.value"
+          rows="4"
+          class="input mono"
+          style="resize: none; font-size: 12px;"
+        ></textarea>
+        <p class="text-[11px] mt-2" style="color: var(--text-tertiary);" x-text="t('sensitiveNote')"></p>
       </div>
-      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
-        <button
-          @click="showValueModal.open = false"
-          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-        >
-          Close
-        </button>
-        <button
-          @click="copyToClipboard(showValueModal.value, 'Value copied')"
-          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
-        >
-          Copy
-        </button>
+      <div class="px-6 py-4 flex justify-end gap-2" style="background: var(--bg-input);">
+        <button @click="showValueModal.open = false" class="btn" x-text="t('close')"></button>
+        <button @click="copyToClipboard(showValueModal.value, t('copied'))" class="btn btn-primary" x-text="t('copy')"></button>
       </div>
     </div>
   </div>
 
   <!-- ============ MODAL: Import .env ============ -->
-  <div
-    x-show="importModal.open"
-    x-transition.opacity
-    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-    @keydown.escape.window="importModal.open = false"
-    style="display: none;"
-  >
-    <div
-      @click.outside="importModal.open = false"
-      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-2xl overflow-hidden"
-    >
-      <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
-        <h3 class="text-base font-semibold">Import .env</h3>
-        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Paste .env content below. Each KEY=VALUE line will be created.</p>
+  <div x-show="importModal.open" class="modal-overlay" @click.self="importModal.open = false" @keydown.escape.window="importModal.open = false" x-transition.opacity>
+    <div class="modal" style="max-width: 560px;">
+      <div class="px-6 pt-5 pb-3">
+        <h3 class="text-[16px] font-semibold" x-text="t('importTitle')"></h3>
+        <p class="text-[12px] mt-0.5" style="color: var(--text-secondary);" x-text="t('importDesc')"></p>
       </div>
-      <div class="px-6 py-5">
+      <div class="px-6 py-3">
         <textarea
           x-model="importModal.content"
           rows="10"
           placeholder="OPENAI_API_KEY=sk-..."
-          class="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+          class="input mono"
+          style="resize: none; font-size: 12px;"
         ></textarea>
       </div>
-      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
-        <button
-          @click="importModal.open = false"
-          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-        >
-          Cancel
-        </button>
-        <button
-          @click="submitImport()"
-          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
-        >
-          Import
-        </button>
+      <div class="px-6 py-4 flex justify-end gap-2" style="background: var(--bg-input);">
+        <button @click="importModal.open = false" class="btn" x-text="t('cancel')"></button>
+        <button @click="submitImport()" class="btn btn-primary" x-text="t('importBtn')"></button>
       </div>
     </div>
   </div>
 
   <!-- ============ MODAL: Confirm Delete ============ -->
-  <div
-    x-show="confirmDeleteModal.open"
-    x-transition.opacity
-    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
-    @keydown.escape.window="confirmDeleteModal.open = false"
-    style="display: none;"
-  >
-    <div
-      @click.outside="confirmDeleteModal.open = false"
-      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-sm overflow-hidden"
-    >
-      <div class="px-6 py-5">
+  <div x-show="confirmDeleteModal.open" class="modal-overlay" @click.self="confirmDeleteModal.open = false" @keydown.escape.window="confirmDeleteModal.open = false" x-transition.opacity>
+    <div class="modal" style="max-width: 380px;">
+      <div class="px-6 pt-5 pb-3">
         <div class="flex items-start gap-3">
-          <div class="text-2xl">⚠️</div>
-          <div class="flex-1">
-            <h3 class="text-base font-semibold mb-1">Delete <code class="font-mono text-rose-600" x-text="confirmDeleteModal.name"></code>?</h3>
-            <p class="text-sm text-slate-500 dark:text-slate-400">This will permanently remove this environment variable from your user profile.</p>
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+               style="background: rgba(255, 59, 48, 0.12);">
+            <i data-lucide="alert-triangle" class="w-5 h-5" style="color: var(--error);"></i>
+          </div>
+          <div>
+            <h3 class="text-[15px] font-semibold mb-1" x-text="t('deleteTitle')"></h3>
+            <p class="text-[12.5px]" style="color: var(--text-secondary);" x-text="t('deleteDesc')"></p>
           </div>
         </div>
       </div>
-      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
-        <button
-          @click="confirmDeleteModal.open = false"
-          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-        >
-          Cancel
-        </button>
-        <button
-          @click="executeDelete()"
-          class="px-4 py-2 text-sm font-medium rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm"
-        >
-          Delete
-        </button>
+      <div class="px-6 py-4 flex justify-end gap-2" style="background: var(--bg-input);">
+        <button @click="confirmDeleteModal.open = false" class="btn" x-text="t('cancel')"></button>
+        <button @click="executeDelete()" class="btn btn-danger" x-text="t('delete')"></button>
       </div>
     </div>
   </div>
 
   <!-- ============ ALPINE.JS APP ============ -->
   <script>
+    // ===== i18n dictionary =====
+    const I18N = {
+      en: {
+        searchKeys: 'Search keys…',
+        refresh: 'Refresh',
+        noMatch: 'No keys match',
+        emptyTitle: 'No managed keys yet',
+        emptyDesc: 'Add your first key, or scan your machine for ones already set up.',
+        addFirst: 'Add Your First Key',
+        discoverN: 'Adopt {n} discovered',
+        copy: 'Copy',
+        show: 'Show',
+        edit: 'Edit',
+        delete: 'Delete',
+        darkMode: 'Dark mode',
+        lightMode: 'Light mode',
+        export: 'Export .env',
+        name: 'Name',
+        value: 'Value',
+        add: 'Add',
+        update: 'Update',
+        cancel: 'Cancel',
+        close: 'Close',
+        copied: 'Copied',
+        hide: 'Hide',
+        show2: 'Show',
+        editKey: 'Edit Key',
+        addNewKey: 'Add New Key',
+        importTitle: 'Import .env',
+        importDesc: 'Paste .env content. Each KEY=VALUE line becomes a managed key.',
+        importBtn: 'Import',
+        deleteTitle: 'Delete this key?',
+        deleteDesc: 'This will permanently remove the env var and forget it.',
+        sensitiveNote: '⚠ This value is sensitive. Don\'t share screenshots.',
+        templates: 'Templates',
+        searchTemplates: 'Search templates…',
+        noTemplates: 'No templates match',
+        chars: 'chars',
+        tipFound: '{n} LLM-like key(s) found on your machine',
+        tipFoundDesc: 'Switch to Discover to review and adopt.',
+        viewDiscover: 'Review now',
+        discoverTitle: 'Discover existing keys',
+        discoverDesc: 'Scanned your User-level env vars. Only LLM-like ones are shown. System vars (PATH, OneDrive, etc.) are filtered out.',
+        rescan: 'Rescan',
+        adoptAll: 'Adopt All',
+        adopt: 'Adopt',
+        remove: 'Remove',
+        alreadyManaged: 'managed',
+        unclearMatch: 'Unclear — please verify',
+        allCaughtUp: 'All caught up!',
+        allCaughtUpDesc: 'Scanned {total} env vars. No new LLM keys found.',
+        customTitle: 'Missing a key? Add it manually',
+        customDesc: 'If your key has an unusual name that the scanner missed, add it here. Your custom name + value will be saved.',
+        addManually: 'Add Manually',
+        skippedCount: '{n} of {total} env vars skipped (likely not LLM)',
+        hide: 'Hide',
+        show3: 'Show',
+        skippedNote: 'Skipped vars include: PATH, OneDrive, TEMP, TMP, system service keys, Azure AD secrets, OAuth tokens, shell/dev tool vars, and any name not matching LLM patterns. Use the toggle above to show the exact exclusion rules.',
+        keys: 'keys',
+      },
+      zh: {
+        searchKeys: '搜索 key…',
+        refresh: '刷新',
+        noMatch: '没有匹配的 key',
+        emptyTitle: '还没有管理的 key',
+        emptyDesc: '添加你的第一个 key，或扫描电脑上已有的。',
+        addFirst: '添加第一个 Key',
+        discoverN: '导入 {n} 个已发现',
+        copy: '复制',
+        show: '显示',
+        edit: '编辑',
+        delete: '删除',
+        darkMode: '深色模式',
+        lightMode: '浅色模式',
+        export: '导出 .env',
+        name: '名称',
+        value: '值',
+        add: '添加',
+        update: '更新',
+        cancel: '取消',
+        close: '关闭',
+        copied: '已复制',
+        hide: '隐藏',
+        show2: '显示',
+        editKey: '编辑 Key',
+        addNewKey: '添加新 Key',
+        importTitle: '导入 .env',
+        importDesc: '粘贴 .env 内容。每行 KEY=VALUE 会被创建为受管理的 key。',
+        importBtn: '导入',
+        deleteTitle: '删除这个 key？',
+        deleteDesc: '将永久删除该环境变量并从白名单中移除。',
+        sensitiveNote: '⚠ 这是敏感信息。不要分享截图。',
+        templates: '预设模板',
+        searchTemplates: '搜索模板…',
+        noTemplates: '没有匹配的模板',
+        chars: '字符',
+        tipFound: '在你电脑上发现 {n} 个疑似 LLM key',
+        tipFoundDesc: '切换到「发现」标签查看并导入。',
+        viewDiscover: '立即查看',
+        discoverTitle: '发现已有的 key',
+        discoverDesc: '已扫描你的 User 级环境变量。只显示疑似 LLM 的。系统变量（PATH、OneDrive 等）已被过滤。',
+        rescan: '重新扫描',
+        adoptAll: '全部导入',
+        adopt: '导入',
+        remove: '移除',
+        alreadyManaged: '已管理',
+        unclearMatch: '不明确 — 请人工确认',
+        allCaughtUp: '扫描完毕！',
+        allCaughtUpDesc: '扫描了 {total} 个环境变量，未发现新的 LLM key。',
+        customTitle: '没找到？手动添加',
+        customDesc: '如果你的 key 命名不规范扫描没识别，在这里手动添加。自定义名称 + 值会被保存。',
+        addManually: '手动添加',
+        skippedCount: '已跳过 {n} / {total} 个环境变量（可能不是 LLM key）',
+        hide: '收起',
+        show3: '展开',
+        skippedNote: '跳过的变量包括：PATH、OneDrive、TEMP、TMP、系统服务 key、Azure AD 凭据、OAuth token、shell/开发工具变量，以及任何不符合 LLM 命名规则的环境变量。点击上方按钮查看完整排除规则。',
+        keys: '个 key',
+      },
+    };
+
     function keyring() {
       return {
-        // ---------- State ----------
-        keys: [],
+        // ===== State =====
+        view: 'managed',
+        managedKeys: [],
+        discover: { adoptable: [], review: [], skipped_count: 0, total_scanned: 0 },
         templates: [],
         info: null,
         search: '',
         templateSearch: '',
         loading: false,
+        discoverLoading: false,
         dark: false,
-        sidebarOpen: true,
+        lang: 'en',
+        templatesOpen: false,
+        showSkipped: false,
 
         toast: { visible: false, message: '', type: 'info' },
         modal: { open: false, mode: 'create', name: '', value: '', error: '', showValue: false },
@@ -520,36 +970,61 @@
         importModal: { open: false, content: '' },
         confirmDeleteModal: { open: false, name: '' },
 
-        // ---------- Computed ----------
-        get filteredKeys() {
-          if (!this.search) return this.keys;
+        // ===== Computed =====
+        get filteredManagedKeys() {
+          if (!this.search) return this.managedKeys;
           const q = this.search.toLowerCase();
-          return this.keys.filter(k => k.name.toLowerCase().includes(q));
+          return this.managedKeys.filter(k => k.name.toLowerCase().includes(q));
         },
 
-        // ---------- Init ----------
+        // ===== i18n helper =====
+        t(key) {
+          const dict = I18N[this.lang] || I18N.en;
+          const tmpl = dict[key] || I18N.en[key] || key;
+          // Replace {n}, {total} placeholders
+          return tmpl;
+        },
+
+        // ===== Init =====
         async init() {
-          // Dark mode from system preference
-          this.dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          // Lang preference
+          this.lang = localStorage.getItem('lang') || navigator.language.startsWith('zh') ? 'zh' : 'en';
+          this.applyLang();
+          this.lang = localStorage.getItem('lang') || this.lang;
+
+          // Theme
+          this.dark = localStorage.getItem('dark') !== null
+            ? localStorage.getItem('dark') === 'true'
+            : window.matchMedia('(prefers-color-scheme: dark)').matches;
           this.applyTheme();
 
-          // Listen for system theme changes
-          window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-            this.dark = e.matches;
-            this.applyTheme();
-          });
+          // Load
+          await Promise.all([this.refresh(), this.loadDiscover(), this.loadTemplates(), this.loadInfo()]);
 
-          // Load data
-          await Promise.all([
-            this.refresh(),
-            this.loadTemplates(),
-            this.loadInfo(),
-          ]);
+          // Init Lucide icons (after DOM settles)
+          this.$nextTick(() => this.initIcons());
+        },
+
+        initIcons() {
+          if (window.lucide) window.lucide.createIcons();
+        },
+
+        applyLang() {
+          document.body.dataset.lang = this.lang;
+        },
+
+        toggleLang() {
+          this.lang = this.lang === 'en' ? 'zh' : 'en';
+          localStorage.setItem('lang', this.lang);
+          this.applyLang();
+          this.$nextTick(() => this.initIcons());
         },
 
         applyTheme() {
-          if (this.dark) document.documentElement.classList.add('dark');
-          else document.documentElement.classList.remove('dark');
+          document.body.classList.toggle('theme-dark', this.dark);
+          document.body.classList.toggle('theme-light', !this.dark);
+          localStorage.setItem('dark', this.dark);
+          this.$nextTick(() => this.initIcons());
         },
 
         toggleDark() {
@@ -557,44 +1032,53 @@
           this.applyTheme();
         },
 
-        toggleSidebar() {
-          this.sidebarOpen = !this.sidebarOpen;
+        switchView(v) {
+          this.view = v;
+          if (v === 'discover') this.loadDiscover();
+          this.$nextTick(() => this.initIcons());
         },
 
-        // ---------- API calls ----------
+        // ===== API =====
         async refresh() {
           this.loading = true;
           try {
-            const res = await fetch('/api/keys');
-            const data = await res.json();
-            this.keys = data.items || [];
+            const r = await fetch('/api/keys');
+            this.managedKeys = (await r.json()).items || [];
           } catch (e) {
-            this.showToast('Failed to load keys: ' + e.message, 'error');
+            this.showToast('Failed to load: ' + e.message, 'error');
           } finally {
             this.loading = false;
           }
         },
 
+        async loadDiscover() {
+          this.discoverLoading = true;
+          try {
+            const r = await fetch('/api/discover');
+            this.discover = await r.json();
+          } catch (e) {
+            this.showToast('Discover failed: ' + e.message, 'error');
+          } finally {
+            this.discoverLoading = false;
+            this.$nextTick(() => this.initIcons());
+          }
+        },
+
         async loadTemplates() {
           try {
-            const res = await fetch('/api/templates');
-            const data = await res.json();
-            this.templates = data.templates || [];
-          } catch (e) {
-            console.error('Failed to load templates:', e);
-          }
+            const r = await fetch('/api/templates');
+            this.templates = (await r.json()).templates || [];
+          } catch (e) { /* non-fatal */ }
         },
 
         async loadInfo() {
           try {
-            const res = await fetch('/api/info');
-            this.info = await res.json();
-          } catch (e) {
-            console.error('Failed to load info:', e);
-          }
+            const r = await fetch('/api/info');
+            this.info = await r.json();
+          } catch (e) { /* non-fatal */ }
         },
 
-        // ---------- Template sidebar ----------
+        // ===== Templates =====
         filteredTemplates() {
           if (!this.templateSearch) return this.templates;
           const q = this.templateSearch.toLowerCase();
@@ -614,41 +1098,26 @@
         },
 
         applyTemplate(t) {
-          this.modal.open = true;
-          this.modal.mode = 'create';
-          this.modal.name = t.name;
-          this.modal.value = '';
-          this.modal.error = '';
-          this.modal.showValue = false;
-          // Close sidebar on mobile-like layouts
-          if (window.innerWidth < 768) this.sidebarOpen = false;
+          this.templatesOpen = false;
+          this.modal = { open: true, mode: 'create', name: t.name, value: '', error: '', showValue: false };
+          this.$nextTick(() => this.initIcons());
         },
 
-        // ---------- Add / Edit modal ----------
+        // ===== Add / Edit =====
         openAdd() {
           this.modal = { open: true, mode: 'create', name: '', value: '', error: '', showValue: false };
-          // Focus name input after Alpine renders
-          this.$nextTick(() => {
-            const input = document.querySelector('input[x-model="modal.name"]');
-            if (input) input.focus();
-          });
+          this.$nextTick(() => this.initIcons());
         },
 
         async openEdit(name) {
           try {
-            const res = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
-            if (!res.ok) throw new Error('Failed to fetch value');
-            const data = await res.json();
-            this.modal = {
-              open: true,
-              mode: 'edit',
-              name: data.name,
-              value: data.value,
-              error: '',
-              showValue: false,
-            };
+            const r = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
+            if (!r.ok) throw new Error('Failed');
+            const data = await r.json();
+            this.modal = { open: true, mode: 'edit', name: data.name, value: data.value, error: '', showValue: false };
+            this.$nextTick(() => this.initIcons());
           } catch (e) {
-            this.showToast('Failed to load value: ' + e.message, 'error');
+            this.showToast('Failed to load: ' + e.message, 'error');
           }
         },
 
@@ -660,153 +1129,189 @@
         async submitModal() {
           const name = this.modal.name.trim();
           const value = this.modal.value;
-
-          if (!name) {
-            this.modal.error = 'Name is required';
-            return;
-          }
-          if (!value) {
-            this.modal.error = 'Value is required';
-            return;
-          }
+          if (!name) { this.modal.error = this.lang === 'zh' ? '名称必填' : 'Name required'; return; }
+          if (!value) { this.modal.error = this.lang === 'zh' ? '值必填' : 'Value required'; return; }
           if (!/^[A-Za-z0-9_]+$/.test(name)) {
-            this.modal.error = 'Name can only contain letters, digits, and underscores';
+            this.modal.error = this.lang === 'zh' ? '名称只能包含字母、数字、下划线' : 'Only letters, digits, underscores';
             return;
           }
 
           const isEdit = this.modal.mode === 'edit';
-          const url = isEdit
-            ? `/api/keys/${encodeURIComponent(name)}`
-            : '/api/keys';
+          const url = isEdit ? `/api/keys/${encodeURIComponent(name)}` : '/api/keys';
           const method = isEdit ? 'PUT' : 'POST';
 
           try {
-            const res = await fetch(url, {
+            const r = await fetch(url, {
               method,
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ name, value }),
             });
-            if (!res.ok) {
-              const err = await res.json().catch(() => ({ detail: res.statusText }));
-              throw new Error(err.detail || 'Request failed');
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({ detail: r.statusText }));
+              throw new Error(err.detail || 'Failed');
             }
-            this.showToast(isEdit ? `Updated ${name}` : `Added ${name}`, 'success');
+            this.showToast(isEdit ? (this.lang === 'zh' ? `已更新 ${name}` : `Updated ${name}`) : (this.lang === 'zh' ? `已添加 ${name}` : `Added ${name}`), 'success');
             this.closeModal();
-            await this.refresh();
+            await Promise.all([this.refresh(), this.loadDiscover()]);
           } catch (e) {
             this.modal.error = e.message;
           }
         },
 
-        // ---------- Show / Copy value ----------
+        // ===== Show / Copy =====
         async showValue(name) {
           try {
-            const res = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
-            if (!res.ok) throw new Error('Failed to fetch value');
-            const data = await res.json();
+            const r = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
+            if (!r.ok) throw new Error('Failed');
+            const data = await r.json();
             this.showValueModal = { open: true, name: data.name, value: data.value };
+            this.$nextTick(() => this.initIcons());
           } catch (e) {
-            this.showToast('Failed to load value: ' + e.message, 'error');
+            this.showToast('Failed: ' + e.message, 'error');
           }
         },
 
         async copyValue(name) {
           try {
-            const res = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
-            if (!res.ok) throw new Error('Failed to fetch value');
-            const data = await res.json();
-            await this.copyToClipboard(data.value, 'Copied to clipboard');
+            const r = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
+            const data = await r.json();
+            await this.copyToClipboard(data.value, this.t('copied'));
           } catch (e) {
-            this.showToast('Copy failed: ' + e.message, 'error');
+            this.showToast('Copy failed', 'error');
           }
         },
 
-        async copyToClipboard(text, message = 'Copied') {
+        async copyToClipboard(text, msg) {
           try {
             await navigator.clipboard.writeText(text);
-            this.showToast(message, 'success');
-          } catch (e) {
-            // Fallback: select + execCommand
+            this.showToast(msg || this.t('copied'), 'success');
+          } catch {
             const ta = document.createElement('textarea');
             ta.value = text;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
             document.body.appendChild(ta);
             ta.select();
-            try {
-              document.execCommand('copy');
-              this.showToast(message, 'success');
-            } catch {
-              this.showToast('Copy failed — please copy manually', 'error');
-            }
+            try { document.execCommand('copy'); this.showToast(msg || this.t('copied'), 'success'); }
+            catch { this.showToast('Copy failed', 'error'); }
             document.body.removeChild(ta);
           }
         },
 
-        // ---------- Delete ----------
+        // ===== Delete =====
         confirmDelete(name) {
           this.confirmDeleteModal = { open: true, name };
+          this.$nextTick(() => this.initIcons());
         },
 
         async executeDelete() {
           const name = this.confirmDeleteModal.name;
           this.confirmDeleteModal.open = false;
           try {
-            const res = await fetch(`/api/keys/${encodeURIComponent(name)}`, { method: 'DELETE' });
-            if (!res.ok) {
-              const err = await res.json().catch(() => ({ detail: res.statusText }));
-              throw new Error(err.detail || 'Delete failed');
+            const r = await fetch(`/api/keys/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({ detail: r.statusText }));
+              throw new Error(err.detail || 'Failed');
             }
-            this.showToast(`Deleted ${name}`, 'success');
-            await this.refresh();
+            this.showToast(this.lang === 'zh' ? `已删除 ${name}` : `Deleted ${name}`, 'success');
+            await Promise.all([this.refresh(), this.loadDiscover()]);
           } catch (e) {
             this.showToast('Delete failed: ' + e.message, 'error');
           }
         },
 
-        // ---------- Import / Export ----------
+        // ===== Adopt / Unadopt =====
+        async adoptKey(name) {
+          try {
+            const r = await fetch('/api/adopt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ names: [name] }),
+            });
+            const data = await r.json();
+            if (data.adopted_count === 1) {
+              this.showToast(this.lang === 'zh' ? `已导入 ${name}` : `Adopted ${name}`, 'success');
+            } else {
+              this.showToast(this.lang === 'zh' ? '已管理' : 'Already managed', 'info');
+            }
+            await Promise.all([this.refresh(), this.loadDiscover()]);
+          } catch (e) {
+            this.showToast('Adopt failed: ' + e.message, 'error');
+          }
+        },
+
+        async adoptAll() {
+          const names = this.discover.adoptable.map(k => k.name);
+          if (names.length === 0) return;
+          try {
+            const r = await fetch('/api/adopt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ names }),
+            });
+            const data = await r.json();
+            this.showToast(
+              this.lang === 'zh'
+                ? `已导入 ${data.adopted_count} 个，跳过 ${data.skipped_count} 个`
+                : `Adopted ${data.adopted_count}, skipped ${data.skipped_count}`,
+              'success'
+            );
+            await Promise.all([this.refresh(), this.loadDiscover()]);
+          } catch (e) {
+            this.showToast('Failed: ' + e.message, 'error');
+          }
+        },
+
+        async unadoptKey(name) {
+          try {
+            const r = await fetch('/api/unadopt', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name }),
+            });
+            const data = await r.json();
+            if (data.unadopted) {
+              this.showToast(this.lang === 'zh' ? `已移除 ${name}` : `Removed ${name}`, 'success');
+            }
+            await Promise.all([this.refresh(), this.loadDiscover()]);
+          } catch (e) {
+            this.showToast('Failed: ' + e.message, 'error');
+          }
+        },
+
+        // ===== Import / Export =====
         openImport() {
           this.importModal = { open: true, content: '' };
-          this.$nextTick(() => {
-            const ta = document.querySelector('textarea[x-model="importModal.content"]');
-            if (ta) ta.focus();
-          });
+          this.$nextTick(() => this.initIcons());
         },
 
         async submitImport() {
           const content = this.importModal.content;
           if (!content.trim()) {
-            this.showToast('Please paste .env content first', 'error');
+            this.showToast(this.lang === 'zh' ? '请先粘贴 .env 内容' : 'Paste .env content first', 'error');
             return;
           }
           try {
-            const res = await fetch('/api/import', {
+            const r = await fetch('/api/import', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ content }),
             });
-            const data = await res.json();
-            if (!res.ok) throw new Error('Import failed');
-
+            const data = await r.json();
             const parts = [];
-            if (data.created_count > 0) parts.push(`✓ Created ${data.created_count}`);
-            if (data.skipped_count > 0) parts.push(`⊘ Skipped ${data.skipped_count}`);
-            if (data.error_count > 0) parts.push(`✕ Errors ${data.error_count}`);
-
-            const type = data.error_count > 0 ? 'error' : 'success';
-            this.showToast(parts.join(' · ') || 'Nothing imported', type);
+            if (data.created_count > 0) parts.push(`✓ ${data.created_count}`);
+            if (data.skipped_count > 0) parts.push(`⊘ ${data.skipped_count}`);
+            if (data.error_count > 0) parts.push(`✕ ${data.error_count}`);
+            this.showToast(parts.join(' · ') || 'Done', data.error_count > 0 ? 'error' : 'success');
             this.importModal.open = false;
-            await this.refresh();
+            await Promise.all([this.refresh(), this.loadDiscover()]);
           } catch (e) {
-            this.showToast('Import failed: ' + e.message, 'error');
+            this.showToast('Failed: ' + e.message, 'error');
           }
         },
 
         async exportEnv() {
           try {
-            const res = await fetch('/api/export', { method: 'POST' });
-            if (!res.ok) throw new Error('Export failed');
-            const text = await res.text();
+            const r = await fetch('/api/export', { method: 'POST' });
+            const text = await r.text();
             const blob = new Blob([text], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -816,22 +1321,16 @@
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            this.showToast('Exported .env file', 'success');
+            this.showToast(this.lang === 'zh' ? '已导出 .env' : 'Exported .env', 'success');
           } catch (e) {
             this.showToast('Export failed: ' + e.message, 'error');
           }
         },
 
-        // ---------- Toast ----------
-        showToast(message, type = 'info', duration = 2500) {
+        // ===== Toast =====
+        showToast(message, type = 'info', duration = 2200) {
           this.toast = { visible: true, message, type };
           setTimeout(() => { this.toast.visible = false; }, duration);
-        },
-
-        // ---------- Search ----------
-        filterKeys() {
-          // Computed via `filteredKeys` getter — no manual filter needed.
-          // This method exists so we can use @input on the search box.
         },
       };
     }
