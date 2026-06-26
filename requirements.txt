@@ -1,0 +1,7 @@
+# Runtime dependencies
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# Build dependencies (only needed for `pyinstaller`, not for normal use)
+# Install separately with: pip install -r requirements-build.txt

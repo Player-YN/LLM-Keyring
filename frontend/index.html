@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLM-Keyring</title>
+  <meta name="description" content="Manage LLM API keys as OS environment variables, from your browser.">
+
+  <!-- TailwindCSS via CDN (single dev/prod build) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Alpine.js for reactivity -->
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+  <!-- Favicon (emoji 🔑 as inline SVG, no extra request) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔑</text></svg>">
+
+  <script>
+    // Tailwind config — dark mode toggleable via .dark on <html>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'system-ui', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Alpine.js x-cloak — hide elements until Alpine initializes */
+    [x-cloak] { display: none !important; }
+
+    /* Custom scrollbar */
+    .custom-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.3); border-radius: 4px; }
+    .custom-scroll::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.5); }
+
+    /* Smooth toast animation */
+    @keyframes slideDown {
+      from { transform: translate(-50%, -100%); opacity: 0; }
+      to { transform: translate(-50%, 0); opacity: 1; }
+    }
+    .toast-anim { animation: slideDown 0.2s ease-out; }
+
+    /* Subtle row hover */
+    .row-hover { transition: background-color 0.1s ease; }
+  </style>
+</head>
+
+<body
+  class="h-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 antialiased"
+  x-data="keyring()"
+  x-init="init()"
+  x-cloak
+>
+  <!-- ============ TOAST ============ -->
+  <div
+    x-show="toast.visible"
+    x-transition.duration.200ms
+    class="fixed top-4 left-1/2 -translate-x-1/2 z-50 toast-anim"
+    style="display: none;"
+  >
+    <div
+      class="px-4 py-3 rounded-lg shadow-lg border max-w-md flex items-center gap-3"
+      :class="{
+        'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700': toast.type === 'info',
+        'bg-emerald-50 dark:bg-emerald-950 border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-100': toast.type === 'success',
+        'bg-rose-50 dark:bg-rose-950 border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-100': toast.type === 'error'
+      }"
+    >
+      <span x-text="toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ⓘ'" class="text-lg"></span>
+      <span x-text="toast.message" class="text-sm font-medium"></span>
+    </div>
+  </div>
+
+  <!-- ============ HEADER ============ -->
+  <header class="sticky top-0 z-30 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200 dark:border-slate-800">
+    <div class="max-w-7xl mx-auto px-6 py-3 flex items-center gap-4">
+      <!-- Logo + title -->
+      <div class="flex items-center gap-2">
+        <span class="text-2xl">🔑</span>
+        <div>
+          <h1 class="text-base font-semibold tracking-tight">LLM-Keyring</h1>
+          <p class="text-xs text-slate-500 dark:text-slate-400 -mt-0.5">v0.1.0 · Manage LLM keys as OS env vars</p>
+        </div>
+      </div>
+
+      <!-- Search -->
+      <div class="flex-1 max-w-xl mx-4">
+        <div class="relative">
+          <input
+            type="text"
+            x-model="search"
+            @input="filterKeys()"
+            placeholder="Search keys (try: openai, hf, ark)..."
+            class="w-full pl-10 pr-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder:text-slate-400"
+          />
+          <svg class="absolute left-3 top-2.5 w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="flex items-center gap-2">
+        <button
+          @click="toggleSidebar()"
+          class="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+          title="Toggle template sidebar"
+        >
+          <span x-show="!sidebarOpen">Templates ▸</span>
+          <span x-show="sidebarOpen" style="display:none;">◂ Templates</span>
+        </button>
+        <button
+          @click="openImport()"
+          class="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+          title="Import .env"
+        >
+          Import
+        </button>
+        <button
+          @click="exportEnv()"
+          class="px-3 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+          title="Export .env"
+        >
+          Export
+        </button>
+        <button
+          @click="openAdd()"
+          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
+        >
+          + Add Key
+        </button>
+        <button
+          @click="toggleDark()"
+          class="px-2 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+          :title="dark ? 'Switch to light mode' : 'Switch to dark mode'"
+        >
+          <span x-text="dark ? '☀' : '🌙'"></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============ MAIN ============ -->
+  <div class="flex max-w-7xl mx-auto px-6 py-6 gap-6">
+
+    <!-- Sidebar: preset templates -->
+    <aside
+      x-show="sidebarOpen"
+      x-transition.opacity.duration.200ms
+      class="w-72 shrink-0"
+      style="display: none;"
+    >
+      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden sticky top-20">
+        <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+          <input
+            type="text"
+            x-model="templateSearch"
+            placeholder="Search templates..."
+            class="w-full px-3 py-1.5 text-sm rounded-md border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder:text-slate-400"
+          />
+        </div>
+        <div class="max-h-[calc(100vh-12rem)] overflow-y-auto custom-scroll">
+          <template x-for="(group, category) in groupedTemplates()" :key="category">
+            <div class="py-2">
+              <h3 class="px-4 py-1.5 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider" x-text="category"></h3>
+              <template x-for="t in group" :key="t.name">
+                <button
+                  @click="applyTemplate(t)"
+                  class="w-full px-4 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800 transition flex items-center justify-between gap-2 group"
+                >
+                  <div class="min-w-0 flex-1">
+                    <div class="text-sm font-mono truncate" x-text="t.name"></div>
+                    <div class="text-xs text-slate-500 dark:text-slate-400 truncate" x-text="t.provider"></div>
+                  </div>
+                  <span class="text-xs text-slate-400 opacity-0 group-hover:opacity-100 transition">→</span>
+                </button>
+              </template>
+            </div>
+          </template>
+          <div x-show="filteredTemplates().length === 0" class="px-4 py-8 text-center text-sm text-slate-400">
+            No templates match
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main: key list -->
+    <main class="flex-1 min-w-0">
+      <!-- Stats bar -->
+      <div class="mb-4 flex items-baseline justify-between">
+        <h2 class="text-sm font-medium text-slate-700 dark:text-slate-300">
+          <span x-text="filteredKeys.length"></span>
+          <span x-text="filteredKeys.length === 1 ? 'key' : 'keys'"></span>
+          <span x-show="search" class="text-slate-400">
+            matching "<span x-text="search"></span>"
+          </span>
+        </h2>
+        <button
+          @click="refresh()"
+          class="text-xs text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition flex items-center gap-1"
+          title="Refresh from registry"
+        >
+          <span x-text="loading ? '⟳' : '↻'"></span>
+          <span x-text="loading ? 'Loading...' : 'Refresh'"></span>
+        </button>
+      </div>
+
+      <!-- Empty state -->
+      <div
+        x-show="!loading && filteredKeys.length === 0"
+        class="bg-white dark:bg-slate-900 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-12 text-center"
+      >
+        <div class="text-5xl mb-4">🔑</div>
+        <h3 class="text-base font-medium mb-1" x-text="search ? 'No keys match your search' : 'No environment variables yet'"></h3>
+        <p class="text-sm text-slate-500 dark:text-slate-400 mb-4" x-show="!search">
+          Add your first API key to get started, or pick a template from the sidebar.
+        </p>
+        <button
+          x-show="!search"
+          @click="openAdd()"
+          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
+        >
+          + Add Your First Key
+        </button>
+      </div>
+
+      <!-- Key list -->
+      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+        <template x-for="(key, idx) in filteredKeys" :key="key.name">
+          <div
+            :class="idx > 0 ? 'border-t border-slate-100 dark:border-slate-800' : ''"
+            class="row-hover px-5 py-3.5 flex items-center gap-4 group"
+          >
+            <!-- Name + masked value -->
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <code class="font-mono text-sm font-semibold truncate" x-text="key.name"></code>
+                <span class="text-xs text-slate-400" x-text="key.length + ' chars'"></span>
+              </div>
+              <div class="flex items-center gap-2 mt-0.5">
+                <code class="font-mono text-xs text-slate-500 dark:text-slate-400 truncate" x-text="key.masked_value"></code>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition">
+              <button
+                @click="copyValue(key.name)"
+                class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                title="Copy value to clipboard"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+                </svg>
+              </button>
+              <button
+                @click="showValue(key.name)"
+                class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                title="Show full value"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+                </svg>
+              </button>
+              <button
+                @click="openEdit(key.name)"
+                class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+                title="Edit value"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                </svg>
+              </button>
+              <button
+                @click="confirmDelete(key.name)"
+                class="p-2 rounded-md hover:bg-rose-50 dark:hover:bg-rose-950 hover:text-rose-600 dark:hover:text-rose-400 transition"
+                title="Delete key"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Footer info -->
+      <div class="mt-6 text-center text-xs text-slate-400">
+        <p>
+          🔑 LLM-Keyring · Keys are stored as Windows User environment variables
+          <span x-show="info && info.platform !== 'Windows'" class="text-amber-500">
+            · ⚠ Running on <span x-text="info?.platform"></span> (read-only mode)
+          </span>
+        </p>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ MODAL: Add / Edit ============ -->
+  <div
+    x-show="modal.open"
+    x-transition.opacity
+    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    @keydown.escape.window="closeModal()"
+    style="display: none;"
+  >
+    <div
+      @click.outside="closeModal()"
+      x-transition
+      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-md overflow-hidden"
+    >
+      <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+        <h3 class="text-base font-semibold" x-text="modal.mode === 'edit' ? 'Edit Key' : 'Add New Key'"></h3>
+      </div>
+
+      <div class="px-6 py-5 space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 uppercase tracking-wide">Name</label>
+          <input
+            type="text"
+            x-model="modal.name"
+            :disabled="modal.mode === 'edit'"
+            placeholder="OPENAI_API_KEY"
+            class="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed"
+          />
+          <p x-show="modal.error" x-text="modal.error" class="text-xs text-rose-600 mt-1"></p>
+        </div>
+
+        <div>
+          <label class="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5 uppercase tracking-wide">Value</label>
+          <div class="relative">
+            <input
+              :type="modal.showValue ? 'text' : 'password'"
+              x-model="modal.value"
+              @keydown.enter="submitModal()"
+              placeholder="sk-..."
+              class="w-full px-3 py-2 pr-20 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <button
+              type="button"
+              @click="modal.showValue = !modal.showValue"
+              class="absolute right-2 top-1.5 px-2 py-1 text-xs rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition"
+              x-text="modal.showValue ? 'Hide' : 'Show'"
+            ></button>
+          </div>
+        </div>
+
+        <div x-show="modal.mode === 'create'" class="text-xs text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800 rounded-md p-3">
+          💡 Tip: Pick a preset from the sidebar to auto-fill the name.
+        </div>
+      </div>
+
+      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
+        <button
+          @click="closeModal()"
+          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+        >
+          Cancel
+        </button>
+        <button
+          @click="submitModal()"
+          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
+        >
+          <span x-text="modal.mode === 'edit' ? 'Update' : 'Add'"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MODAL: Show Value ============ -->
+  <div
+    x-show="showValueModal.open"
+    x-transition.opacity
+    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    @keydown.escape.window="showValueModal.open = false"
+    style="display: none;"
+  >
+    <div
+      @click.outside="showValueModal.open = false"
+      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-lg overflow-hidden"
+    >
+      <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+        <h3 class="text-base font-semibold">Value of <code class="font-mono text-indigo-600 dark:text-indigo-400" x-text="showValueModal.name"></code></h3>
+      </div>
+      <div class="px-6 py-5">
+        <div class="relative">
+          <textarea
+            readonly
+            x-model="showValueModal.value"
+            rows="4"
+            class="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none resize-none"
+          ></textarea>
+        </div>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-2">
+          ⚠ This value is sensitive. Don't share screenshots.
+        </p>
+      </div>
+      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
+        <button
+          @click="showValueModal.open = false"
+          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+        >
+          Close
+        </button>
+        <button
+          @click="copyToClipboard(showValueModal.value, 'Value copied')"
+          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
+        >
+          Copy
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MODAL: Import .env ============ -->
+  <div
+    x-show="importModal.open"
+    x-transition.opacity
+    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    @keydown.escape.window="importModal.open = false"
+    style="display: none;"
+  >
+    <div
+      @click.outside="importModal.open = false"
+      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-2xl overflow-hidden"
+    >
+      <div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+        <h3 class="text-base font-semibold">Import .env</h3>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Paste .env content below. Each KEY=VALUE line will be created.</p>
+      </div>
+      <div class="px-6 py-5">
+        <textarea
+          x-model="importModal.content"
+          rows="10"
+          placeholder="OPENAI_API_KEY=sk-..."
+          class="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none"
+        ></textarea>
+      </div>
+      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
+        <button
+          @click="importModal.open = false"
+          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+        >
+          Cancel
+        </button>
+        <button
+          @click="submitImport()"
+          class="px-4 py-2 text-sm font-medium rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition shadow-sm"
+        >
+          Import
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ MODAL: Confirm Delete ============ -->
+  <div
+    x-show="confirmDeleteModal.open"
+    x-transition.opacity
+    class="fixed inset-0 z-40 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    @keydown.escape.window="confirmDeleteModal.open = false"
+    style="display: none;"
+  >
+    <div
+      @click.outside="confirmDeleteModal.open = false"
+      class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-sm overflow-hidden"
+    >
+      <div class="px-6 py-5">
+        <div class="flex items-start gap-3">
+          <div class="text-2xl">⚠️</div>
+          <div class="flex-1">
+            <h3 class="text-base font-semibold mb-1">Delete <code class="font-mono text-rose-600" x-text="confirmDeleteModal.name"></code>?</h3>
+            <p class="text-sm text-slate-500 dark:text-slate-400">This will permanently remove this environment variable from your user profile.</p>
+          </div>
+        </div>
+      </div>
+      <div class="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end gap-2">
+        <button
+          @click="confirmDeleteModal.open = false"
+          class="px-4 py-2 text-sm rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+        >
+          Cancel
+        </button>
+        <button
+          @click="executeDelete()"
+          class="px-4 py-2 text-sm font-medium rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition shadow-sm"
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ ALPINE.JS APP ============ -->
+  <script>
+    function keyring() {
+      return {
+        // ---------- State ----------
+        keys: [],
+        templates: [],
+        info: null,
+        search: '',
+        templateSearch: '',
+        loading: false,
+        dark: false,
+        sidebarOpen: true,
+
+        toast: { visible: false, message: '', type: 'info' },
+        modal: { open: false, mode: 'create', name: '', value: '', error: '', showValue: false },
+        showValueModal: { open: false, name: '', value: '' },
+        importModal: { open: false, content: '' },
+        confirmDeleteModal: { open: false, name: '' },
+
+        // ---------- Computed ----------
+        get filteredKeys() {
+          if (!this.search) return this.keys;
+          const q = this.search.toLowerCase();
+          return this.keys.filter(k => k.name.toLowerCase().includes(q));
+        },
+
+        // ---------- Init ----------
+        async init() {
+          // Dark mode from system preference
+          this.dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          this.applyTheme();
+
+          // Listen for system theme changes
+          window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
+            this.dark = e.matches;
+            this.applyTheme();
+          });
+
+          // Load data
+          await Promise.all([
+            this.refresh(),
+            this.loadTemplates(),
+            this.loadInfo(),
+          ]);
+        },
+
+        applyTheme() {
+          if (this.dark) document.documentElement.classList.add('dark');
+          else document.documentElement.classList.remove('dark');
+        },
+
+        toggleDark() {
+          this.dark = !this.dark;
+          this.applyTheme();
+        },
+
+        toggleSidebar() {
+          this.sidebarOpen = !this.sidebarOpen;
+        },
+
+        // ---------- API calls ----------
+        async refresh() {
+          this.loading = true;
+          try {
+            const res = await fetch('/api/keys');
+            const data = await res.json();
+            this.keys = data.items || [];
+          } catch (e) {
+            this.showToast('Failed to load keys: ' + e.message, 'error');
+          } finally {
+            this.loading = false;
+          }
+        },
+
+        async loadTemplates() {
+          try {
+            const res = await fetch('/api/templates');
+            const data = await res.json();
+            this.templates = data.templates || [];
+          } catch (e) {
+            console.error('Failed to load templates:', e);
+          }
+        },
+
+        async loadInfo() {
+          try {
+            const res = await fetch('/api/info');
+            this.info = await res.json();
+          } catch (e) {
+            console.error('Failed to load info:', e);
+          }
+        },
+
+        // ---------- Template sidebar ----------
+        filteredTemplates() {
+          if (!this.templateSearch) return this.templates;
+          const q = this.templateSearch.toLowerCase();
+          return this.templates.filter(t =>
+            t.name.toLowerCase().includes(q) ||
+            t.provider.toLowerCase().includes(q)
+          );
+        },
+
+        groupedTemplates() {
+          const groups = {};
+          for (const t of this.filteredTemplates()) {
+            if (!groups[t.category]) groups[t.category] = [];
+            groups[t.category].push(t);
+          }
+          return groups;
+        },
+
+        applyTemplate(t) {
+          this.modal.open = true;
+          this.modal.mode = 'create';
+          this.modal.name = t.name;
+          this.modal.value = '';
+          this.modal.error = '';
+          this.modal.showValue = false;
+          // Close sidebar on mobile-like layouts
+          if (window.innerWidth < 768) this.sidebarOpen = false;
+        },
+
+        // ---------- Add / Edit modal ----------
+        openAdd() {
+          this.modal = { open: true, mode: 'create', name: '', value: '', error: '', showValue: false };
+          // Focus name input after Alpine renders
+          this.$nextTick(() => {
+            const input = document.querySelector('input[x-model="modal.name"]');
+            if (input) input.focus();
+          });
+        },
+
+        async openEdit(name) {
+          try {
+            const res = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
+            if (!res.ok) throw new Error('Failed to fetch value');
+            const data = await res.json();
+            this.modal = {
+              open: true,
+              mode: 'edit',
+              name: data.name,
+              value: data.value,
+              error: '',
+              showValue: false,
+            };
+          } catch (e) {
+            this.showToast('Failed to load value: ' + e.message, 'error');
+          }
+        },
+
+        closeModal() {
+          this.modal.open = false;
+          this.modal.error = '';
+        },
+
+        async submitModal() {
+          const name = this.modal.name.trim();
+          const value = this.modal.value;
+
+          if (!name) {
+            this.modal.error = 'Name is required';
+            return;
+          }
+          if (!value) {
+            this.modal.error = 'Value is required';
+            return;
+          }
+          if (!/^[A-Za-z0-9_]+$/.test(name)) {
+            this.modal.error = 'Name can only contain letters, digits, and underscores';
+            return;
+          }
+
+          const isEdit = this.modal.mode === 'edit';
+          const url = isEdit
+            ? `/api/keys/${encodeURIComponent(name)}`
+            : '/api/keys';
+          const method = isEdit ? 'PUT' : 'POST';
+
+          try {
+            const res = await fetch(url, {
+              method,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ name, value }),
+            });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ detail: res.statusText }));
+              throw new Error(err.detail || 'Request failed');
+            }
+            this.showToast(isEdit ? `Updated ${name}` : `Added ${name}`, 'success');
+            this.closeModal();
+            await this.refresh();
+          } catch (e) {
+            this.modal.error = e.message;
+          }
+        },
+
+        // ---------- Show / Copy value ----------
+        async showValue(name) {
+          try {
+            const res = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
+            if (!res.ok) throw new Error('Failed to fetch value');
+            const data = await res.json();
+            this.showValueModal = { open: true, name: data.name, value: data.value };
+          } catch (e) {
+            this.showToast('Failed to load value: ' + e.message, 'error');
+          }
+        },
+
+        async copyValue(name) {
+          try {
+            const res = await fetch(`/api/keys/${encodeURIComponent(name)}/value`);
+            if (!res.ok) throw new Error('Failed to fetch value');
+            const data = await res.json();
+            await this.copyToClipboard(data.value, 'Copied to clipboard');
+          } catch (e) {
+            this.showToast('Copy failed: ' + e.message, 'error');
+          }
+        },
+
+        async copyToClipboard(text, message = 'Copied') {
+          try {
+            await navigator.clipboard.writeText(text);
+            this.showToast(message, 'success');
+          } catch (e) {
+            // Fallback: select + execCommand
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            try {
+              document.execCommand('copy');
+              this.showToast(message, 'success');
+            } catch {
+              this.showToast('Copy failed — please copy manually', 'error');
+            }
+            document.body.removeChild(ta);
+          }
+        },
+
+        // ---------- Delete ----------
+        confirmDelete(name) {
+          this.confirmDeleteModal = { open: true, name };
+        },
+
+        async executeDelete() {
+          const name = this.confirmDeleteModal.name;
+          this.confirmDeleteModal.open = false;
+          try {
+            const res = await fetch(`/api/keys/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            if (!res.ok) {
+              const err = await res.json().catch(() => ({ detail: res.statusText }));
+              throw new Error(err.detail || 'Delete failed');
+            }
+            this.showToast(`Deleted ${name}`, 'success');
+            await this.refresh();
+          } catch (e) {
+            this.showToast('Delete failed: ' + e.message, 'error');
+          }
+        },
+
+        // ---------- Import / Export ----------
+        openImport() {
+          this.importModal = { open: true, content: '' };
+          this.$nextTick(() => {
+            const ta = document.querySelector('textarea[x-model="importModal.content"]');
+            if (ta) ta.focus();
+          });
+        },
+
+        async submitImport() {
+          const content = this.importModal.content;
+          if (!content.trim()) {
+            this.showToast('Please paste .env content first', 'error');
+            return;
+          }
+          try {
+            const res = await fetch('/api/import', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ content }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error('Import failed');
+
+            const parts = [];
+            if (data.created_count > 0) parts.push(`✓ Created ${data.created_count}`);
+            if (data.skipped_count > 0) parts.push(`⊘ Skipped ${data.skipped_count}`);
+            if (data.error_count > 0) parts.push(`✕ Errors ${data.error_count}`);
+
+            const type = data.error_count > 0 ? 'error' : 'success';
+            this.showToast(parts.join(' · ') || 'Nothing imported', type);
+            this.importModal.open = false;
+            await this.refresh();
+          } catch (e) {
+            this.showToast('Import failed: ' + e.message, 'error');
+          }
+        },
+
+        async exportEnv() {
+          try {
+            const res = await fetch('/api/export', { method: 'POST' });
+            if (!res.ok) throw new Error('Export failed');
+            const text = await res.text();
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '.env';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            this.showToast('Exported .env file', 'success');
+          } catch (e) {
+            this.showToast('Export failed: ' + e.message, 'error');
+          }
+        },
+
+        // ---------- Toast ----------
+        showToast(message, type = 'info', duration = 2500) {
+          this.toast = { visible: true, message, type };
+          setTimeout(() => { this.toast.visible = false; }, duration);
+        },
+
+        // ---------- Search ----------
+        filterKeys() {
+          // Computed via `filteredKeys` getter — no manual filter needed.
+          // This method exists so we can use @input on the search box.
+        },
+      };
+    }
+  </script>
+</body>
+</html>
