@@ -108,6 +108,7 @@ PRESET_TEMPLATES: List[Dict[str, str]] = [
     {"name": "ZHIPUAI_API_KEY",         "provider": "智谱 BigModel",                 "category": "Chinese"},
     {"name": "QIANFAN_API_KEY",         "provider": "百度千帆",                       "category": "Chinese"},
     {"name": "DASHSCOPE_API_KEY",       "provider": "阿里 DashScope (通义千问)",      "category": "Chinese"},
+    {"name": "AGNES_API_KEY",            "provider": "Agnes AI (新加坡全模态,免费)",     "category": "International"},
 ]
 
 
