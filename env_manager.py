@@ -31,16 +31,40 @@ import platform
 import re
 import subprocess
 import sys
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+
+
+# Module-level lock for managed_keys.json read-modify-write operations.
+# Keeps concurrent requests (multi-tab, scripts) from clobbering each
+# other. Lock scope is per-process; a future multi-process deployment
+# would need an OS-level file lock.
+_managed_keys_lock = threading.Lock()
 
 
 SYSTEM = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
 # ============================================================
-# Managed-keys whitelist persistence
+# Managed-keys whitelist persistence  (v2 schema)
 # ============================================================
+#
+# v1 (legacy):  {"keys": ["AGNES_API_KEY", "MINIMAX_API_KEY"]}
+# v2 (current): {"version": 2, "keys": [
+#                   {"name": "AGNES_API_KEY", "provider": "Agnes AI",
+#                    "base_url": "https://apihub.agnes-ai.com/v1",
+#                    "default_model": "agnes-2.0-flash",
+#                    "added_at": "2026-06-27T08:00:00Z"}
+#                 ]}
+#
+# The v2 schema captures the user's **explicit provider binding** for each
+# managed key. This binding is set once (when the user first configures the
+# key) and persists permanently. It's tied to the key NAME, not the key
+# VALUE, so rotating the API secret does NOT break the binding.
+# ============================================================
+
 
 def _managed_keys_path() -> Path:
     """
@@ -70,53 +94,229 @@ def _managed_keys_path() -> Path:
         return Path(__file__).parent / "managed_keys.json"
 
 
-def _load_managed_keys() -> Set[str]:
-    """Load the set of key names the user has marked as managed."""
+class ManagedKey:
+    """A single managed-key entry (v2 schema)."""
+
+    __slots__ = ("name", "provider", "base_url", "default_model", "added_at")
+
+    def __init__(
+        self,
+        name: str,
+        provider: str = "",
+        base_url: str = "",
+        default_model: str = "",
+        added_at: Optional[str] = None,
+    ):
+        self.name = name
+        self.provider = provider
+        # NIT-4: normalize trailing slash on write so downstream code
+        # doesn't accidentally build `https://api.openai.com/v1/chat/completions`
+        # (404). Read-side already strips in _resolve_base_url, but storing
+        # the canonical form is cleaner.
+        self.base_url = base_url.rstrip("/") if base_url else ""
+        self.default_model = default_model
+        self.added_at = added_at or datetime.now(timezone.utc).isoformat()
+
+    def to_dict(self) -> Dict:
+        return {
+            "name": self.name,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "default_model": self.default_model,
+            "added_at": self.added_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "ManagedKey":
+        return cls(
+            name=data.get("name", ""),
+            provider=data.get("provider", ""),
+            base_url=data.get("base_url", ""),
+            default_model=data.get("default_model", ""),
+            added_at=data.get("added_at"),
+        )
+
+    def has_binding(self) -> bool:
+        """True if the user has set a provider binding for this key.
+
+        A binding is considered "set" if either the provider id is non-empty
+        OR a custom base URL was provided. The previous semantics
+        (only base_url) left Azure / AWS Bedrock / custom-proxy users
+        permanently stuck in the orange 'No provider bound' prompt
+        because their preset base_url is empty by design.
+        """
+        return bool(self.provider or self.base_url)
+
+
+def _load_managed_keys_raw() -> List[ManagedKey]:
+    """
+    Read the managed-keys file, handling both v1 (legacy list) and v2 (dict)
+    schemas. v1 files are auto-migrated to v2 on the next save (binding
+    fields are left empty — user must configure them in the UI).
+
+    Returns a list of ManagedKey. If the file is missing or corrupt, returns [].
+
+    NOTE: callers that mutate the returned list and then call
+    _save_managed_keys_raw() MUST hold _managed_keys_lock for the
+    entire read-modify-write window. The lock is intentionally NOT held
+    here, so that read-only callers (is_managed, get_managed_keys,
+    discover_llm_keys, list_managed_keys endpoint, etc.) don't pay any
+    serialization cost.
+    """
     path = _managed_keys_path()
     if not path.exists():
-        return set()
+        return []
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return set(data.get("keys", []))
     except (json.JSONDecodeError, OSError):
         # Corrupt file — start fresh, don't lose user's env vars
-        return set()
+        return []
+
+    keys_field = data.get("keys", [])
+    out: List[ManagedKey] = []
+
+    # v2 schema: list of dicts
+    if isinstance(keys_field, list) and keys_field and isinstance(keys_field[0], dict):
+        for entry in keys_field:
+            if isinstance(entry, dict) and entry.get("name"):
+                out.append(ManagedKey.from_dict(entry))
+    # v1 schema: list of strings (just names, no binding)
+    elif isinstance(keys_field, list):
+        for name in keys_field:
+            if isinstance(name, str) and name:
+                out.append(ManagedKey(name=name))  # binding fields empty
+
+    return out
 
 
-def _save_managed_keys(keys: Set[str]) -> None:
-    """Persist the managed-keys whitelist to disk."""
+def _save_managed_keys_raw(keys: List[ManagedKey]) -> None:
+    """Persist the managed-keys list to disk in v2 schema format.
+
+    Writes atomically: serialize to <path>.tmp first, then os.replace()
+    (which is atomic on the same volume on Windows + POSIX). If the
+    process is killed mid-write, only the .tmp file is left corrupt —
+    the real managed_keys.json is untouched.
+    """
     path = _managed_keys_path()
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"keys": sorted(keys)}, f, indent=2, ensure_ascii=False)
+        payload = {
+            "version": 2,
+            "keys": [k.to_dict() for k in keys],
+        }
+        # Sort by name (case-insensitive) for stable file diffs.
+        # (Mutates the freshly-built list — safe because it's not used after.)
+        payload["keys"].sort(key=lambda x: x["name"].upper())
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
     except OSError:
-        # If we can't write (read-only fs, etc.), the panel still works in-memory
-        pass
+        # If we can't write (read-only fs, etc.), the panel still works in-memory.
+        # Best-effort cleanup of the .tmp so we don't leave junk.
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
-def add_managed_key(name: str) -> None:
-    """Add a key name to the managed whitelist."""
-    keys = _load_managed_keys()
-    keys.add(name)
-    _save_managed_keys(keys)
+# ============================================================
+# Public whitelist API
+# ============================================================
+
+def get_managed_keys() -> Set[str]:
+    """Get the set of managed key NAMES (legacy interface, still used in many places)."""
+    return {k.name for k in _load_managed_keys_raw()}
 
 
-def remove_managed_key(name: str) -> None:
-    """Remove a key name from the managed whitelist (does NOT delete the env var)."""
-    keys = _load_managed_keys()
-    keys.discard(name)
-    _save_managed_keys(keys)
+def get_managed_keys_full() -> List[ManagedKey]:
+    """Get the full list of managed keys with their bindings."""
+    return _load_managed_keys_raw()
+
+
+def get_managed_key(name: str) -> Optional[ManagedKey]:
+    """Get a single managed key by name (including binding info)."""
+    for k in _load_managed_keys_raw():
+        if k.name == name:
+            return k
+    return None
 
 
 def is_managed(name: str) -> bool:
     """Check if a key is in the managed whitelist."""
-    return name in _load_managed_keys()
+    return name in get_managed_keys()
 
 
-def get_managed_keys() -> Set[str]:
-    """Get a fresh copy of the managed whitelist."""
-    return _load_managed_keys()
+def add_managed_key(
+    name: str,
+    provider: str = "",
+    base_url: str = "",
+    default_model: str = "",
+) -> ManagedKey:
+    """
+    Add (or update) a key in the managed whitelist with provider binding.
+
+    If the key already exists, only the provided binding fields are updated
+    (others preserved). Returns the resulting ManagedKey.
+
+    This is the primary API for setting provider bindings. Called when:
+      - User adds a new key with provider info
+      - User adopts a key with provider info (Discover)
+      - User edits an existing key's binding
+    """
+    with _managed_keys_lock:
+        keys = _load_managed_keys_raw()
+        existing = next((k for k in keys if k.name == name), None)
+        if existing:
+            # Update only the fields that were explicitly provided (non-empty)
+            if provider:
+                existing.provider = provider
+            if base_url:
+                existing.base_url = base_url
+            if default_model:
+                existing.default_model = default_model
+            result = existing
+        else:
+            result = ManagedKey(
+                name=name,
+                provider=provider,
+                base_url=base_url,
+                default_model=default_model,
+            )
+            keys.append(result)
+
+        _save_managed_keys_raw(keys)
+        return result
+
+
+def update_binding(name: str, provider: str, base_url: str, default_model: str = "") -> ManagedKey:
+    """
+    Set / update the provider binding for an already-managed key.
+
+    Unlike add_managed_key(), this REPLACES the binding fields unconditionally
+    (used by the Edit-binding UI). The key must already be managed.
+
+    Raises ValueError if the key is not managed.
+    """
+    with _managed_keys_lock:
+        keys = _load_managed_keys_raw()
+        for k in keys:
+            if k.name == name:
+                k.provider = provider
+                k.base_url = base_url
+                k.default_model = default_model
+                _save_managed_keys_raw(keys)
+                return k
+    raise ValueError(f"Key '{name}' is not managed")
+
+
+def remove_managed_key(name: str) -> None:
+    """Remove a key from the managed whitelist. Does NOT delete the env var."""
+    with _managed_keys_lock:
+        keys = _load_managed_keys_raw()
+        keys = [k for k in keys if k.name != name]
+    _save_managed_keys_raw(keys)
 
 
 # ============================================================
@@ -265,14 +465,22 @@ def read_managed_env() -> Dict[str, str]:
     they exist in the registry.
     """
     all_env = read_all_user_env()
-    managed = _load_managed_keys()
+    managed = get_managed_keys()
     return {k: v for k, v in all_env.items() if k in managed}
 
 
 def set_user_env(name: str, value: str) -> None:
     """
-    Set a User-level env var. Caller should ALSO call add_managed_key(name)
-    if this is a new key (i.e., not previously in the whitelist).
+    Set a User-level env var (registry + kernel session + broadcast).
+
+    Does NOT touch the managed whitelist. Callers that want the key to
+    show up in the Managed view must call add_managed_key() themselves.
+    This avoids a previous bug where create_key would do two separate
+    writes (auto-add here + binding add later), and a crash between
+    them would leave the user with a binding-less entry.
+
+    The three current callers (create_key, update_key, import_env) all
+    handle add_managed_key() explicitly — see main.py.
     """
     _validate_name(name)
     if value is None:
@@ -282,9 +490,6 @@ def set_user_env(name: str, value: str) -> None:
         _windows_set_user_env(name, value)
     else:
         _unix_set_user_env(name, value)
-
-    # Auto-add to managed whitelist (idempotent — already-managed is a no-op)
-    add_managed_key(name)
 
 
 def delete_user_env(name: str) -> bool:
@@ -351,7 +556,7 @@ def discover_llm_keys() -> List[Dict]:
         - skipped: low / excluded (not LLM)
     """
     all_env = read_all_user_env()
-    managed = _load_managed_keys()
+    managed = get_managed_keys()
 
     adoptable: List[Dict] = []
     review: List[Dict] = []
@@ -385,18 +590,22 @@ def discover_llm_keys() -> List[Dict]:
     }
 
 
-def adopt_key(name: str) -> bool:
+def adopt_key(name: str, provider: str = "", base_url: str = "", default_model: str = "") -> bool:
     """
-    Add `name` to the managed whitelist. The env var must already exist.
+    Add `name` to the managed whitelist with optional provider binding.
 
-    Returns True if adopted (newly added), False if already managed.
+    The env var must already exist. If binding fields are provided, they're
+    persisted with the key. Returns True if newly adopted, False if already managed.
     """
     all_env = read_all_user_env()
     if name not in all_env:
         raise ValueError(f"Cannot adopt '{name}': env var does not exist")
-    if name in _load_managed_keys():
+    if name in get_managed_keys():
+        # Already managed — update binding if caller provided one
+        if base_url:
+            update_binding(name, provider, base_url, default_model)
         return False
-    add_managed_key(name)
+    add_managed_key(name, provider=provider, base_url=base_url, default_model=default_model)
     return True
 
 
@@ -404,26 +613,43 @@ def unadopt_key(name: str) -> bool:
     """
     Remove `name` from the managed whitelist. Does NOT delete the env var.
     """
-    if name not in _load_managed_keys():
+    if name not in get_managed_keys():
         return False
     remove_managed_key(name)
     return True
 
 
-def adopt_keys_bulk(names: List[str]) -> Dict:
-    """Adopt multiple keys at once. Returns counts of success/failure."""
+def adopt_keys_bulk(items: List[Dict[str, str]]) -> Dict:
+    """
+    Adopt multiple keys at once, each with its own optional binding.
+
+    Args:
+        items: list of dicts, each with at least {"name": ...}, and optionally
+               {"provider": ..., "base_url": ..., "default_model": ...}
+
+    Returns counts of success/failure.
+    """
     all_env = read_all_user_env()
-    managed = _load_managed_keys()
+    managed = get_managed_keys()
     adopted = []
     skipped = []
 
-    for name in names:
+    for item in items:
+        name = item.get("name", "").strip() if isinstance(item, dict) else ""
+        if not name:
+            skipped.append({"name": "", "reason": "missing name"})
+            continue
         if name not in all_env:
             skipped.append({"name": name, "reason": "env var does not exist"})
         elif name in managed:
             skipped.append({"name": name, "reason": "already managed"})
         else:
-            add_managed_key(name)
+            add_managed_key(
+                name,
+                provider=item.get("provider", ""),
+                base_url=item.get("base_url", ""),
+                default_model=item.get("default_model", ""),
+            )
             adopted.append(name)
 
     return {
