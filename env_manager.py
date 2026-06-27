@@ -31,9 +31,17 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+
+
+# Module-level lock for managed_keys.json read-modify-write operations.
+# Keeps concurrent requests (multi-tab, scripts) from clobbering each
+# other. Lock scope is per-process; a future multi-process deployment
+# would need an OS-level file lock.
+_managed_keys_lock = threading.Lock()
 
 
 SYSTEM = platform.system()  # "Windows" | "Darwin" | "Linux"
@@ -101,7 +109,11 @@ class ManagedKey:
     ):
         self.name = name
         self.provider = provider
-        self.base_url = base_url
+        # NIT-4: normalize trailing slash on write so downstream code
+        # doesn't accidentally build `https://api.openai.com/v1/chat/completions`
+        # (404). Read-side already strips in _resolve_base_url, but storing
+        # the canonical form is cleaner.
+        self.base_url = base_url.rstrip("/") if base_url else ""
         self.default_model = default_model
         self.added_at = added_at or datetime.now(timezone.utc).isoformat()
 
@@ -125,8 +137,15 @@ class ManagedKey:
         )
 
     def has_binding(self) -> bool:
-        """True if the user has set a provider binding for this key."""
-        return bool(self.base_url)
+        """True if the user has set a provider binding for this key.
+
+        A binding is considered "set" if either the provider id is non-empty
+        OR a custom base URL was provided. The previous semantics
+        (only base_url) left Azure / AWS Bedrock / custom-proxy users
+        permanently stuck in the orange 'No provider bound' prompt
+        because their preset base_url is empty by design.
+        """
+        return bool(self.provider or self.base_url)
 
 
 def _load_managed_keys_raw() -> List[ManagedKey]:
@@ -136,6 +155,13 @@ def _load_managed_keys_raw() -> List[ManagedKey]:
     fields are left empty — user must configure them in the UI).
 
     Returns a list of ManagedKey. If the file is missing or corrupt, returns [].
+
+    NOTE: callers that mutate the returned list and then call
+    _save_managed_keys_raw() MUST hold _managed_keys_lock for the
+    entire read-modify-write window. The lock is intentionally NOT held
+    here, so that read-only callers (is_managed, get_managed_keys,
+    discover_llm_keys, list_managed_keys endpoint, etc.) don't pay any
+    serialization cost.
     """
     path = _managed_keys_path()
     if not path.exists():
@@ -165,20 +191,34 @@ def _load_managed_keys_raw() -> List[ManagedKey]:
 
 
 def _save_managed_keys_raw(keys: List[ManagedKey]) -> None:
-    """Persist the managed-keys list to disk in v2 schema format."""
+    """Persist the managed-keys list to disk in v2 schema format.
+
+    Writes atomically: serialize to <path>.tmp first, then os.replace()
+    (which is atomic on the same volume on Windows + POSIX). If the
+    process is killed mid-write, only the .tmp file is left corrupt —
+    the real managed_keys.json is untouched.
+    """
     path = _managed_keys_path()
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
     try:
         payload = {
             "version": 2,
             "keys": [k.to_dict() for k in keys],
         }
-        # Sort by name (case-insensitive) for stable file diffs
+        # Sort by name (case-insensitive) for stable file diffs.
+        # (Mutates the freshly-built list — safe because it's not used after.)
         payload["keys"].sort(key=lambda x: x["name"].upper())
-        with open(path, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, path)
     except OSError:
-        # If we can't write (read-only fs, etc.), the panel still works in-memory
-        pass
+        # If we can't write (read-only fs, etc.), the panel still works in-memory.
+        # Best-effort cleanup of the .tmp so we don't leave junk.
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
 
 
 # ============================================================
@@ -225,28 +265,29 @@ def add_managed_key(
       - User adopts a key with provider info (Discover)
       - User edits an existing key's binding
     """
-    keys = _load_managed_keys_raw()
-    existing = next((k for k in keys if k.name == name), None)
-    if existing:
-        # Update only the fields that were explicitly provided (non-empty)
-        if provider:
-            existing.provider = provider
-        if base_url:
-            existing.base_url = base_url
-        if default_model:
-            existing.default_model = default_model
-        result = existing
-    else:
-        result = ManagedKey(
-            name=name,
-            provider=provider,
-            base_url=base_url,
-            default_model=default_model,
-        )
-        keys.append(result)
+    with _managed_keys_lock:
+        keys = _load_managed_keys_raw()
+        existing = next((k for k in keys if k.name == name), None)
+        if existing:
+            # Update only the fields that were explicitly provided (non-empty)
+            if provider:
+                existing.provider = provider
+            if base_url:
+                existing.base_url = base_url
+            if default_model:
+                existing.default_model = default_model
+            result = existing
+        else:
+            result = ManagedKey(
+                name=name,
+                provider=provider,
+                base_url=base_url,
+                default_model=default_model,
+            )
+            keys.append(result)
 
-    _save_managed_keys_raw(keys)
-    return result
+        _save_managed_keys_raw(keys)
+        return result
 
 
 def update_binding(name: str, provider: str, base_url: str, default_model: str = "") -> ManagedKey:
@@ -258,21 +299,23 @@ def update_binding(name: str, provider: str, base_url: str, default_model: str =
 
     Raises ValueError if the key is not managed.
     """
-    keys = _load_managed_keys_raw()
-    for k in keys:
-        if k.name == name:
-            k.provider = provider
-            k.base_url = base_url
-            k.default_model = default_model
-            _save_managed_keys_raw(keys)
-            return k
+    with _managed_keys_lock:
+        keys = _load_managed_keys_raw()
+        for k in keys:
+            if k.name == name:
+                k.provider = provider
+                k.base_url = base_url
+                k.default_model = default_model
+                _save_managed_keys_raw(keys)
+                return k
     raise ValueError(f"Key '{name}' is not managed")
 
 
 def remove_managed_key(name: str) -> None:
     """Remove a key from the managed whitelist. Does NOT delete the env var."""
-    keys = _load_managed_keys_raw()
-    keys = [k for k in keys if k.name != name]
+    with _managed_keys_lock:
+        keys = _load_managed_keys_raw()
+        keys = [k for k in keys if k.name != name]
     _save_managed_keys_raw(keys)
 
 
@@ -428,12 +471,16 @@ def read_managed_env() -> Dict[str, str]:
 
 def set_user_env(name: str, value: str) -> None:
     """
-    Set a User-level env var.
+    Set a User-level env var (registry + kernel session + broadcast).
 
-    For backward compatibility, if the key is NOT already in the whitelist,
-    it's auto-added (with empty binding). Callers that want to set a binding
-    at create time should call set_user_env() then add_managed_key() with the
-    binding fields — or use the higher-level create_key flow in main.py.
+    Does NOT touch the managed whitelist. Callers that want the key to
+    show up in the Managed view must call add_managed_key() themselves.
+    This avoids a previous bug where create_key would do two separate
+    writes (auto-add here + binding add later), and a crash between
+    them would leave the user with a binding-less entry.
+
+    The three current callers (create_key, update_key, import_env) all
+    handle add_managed_key() explicitly — see main.py.
     """
     _validate_name(name)
     if value is None:
@@ -443,11 +490,6 @@ def set_user_env(name: str, value: str) -> None:
         _windows_set_user_env(name, value)
     else:
         _unix_set_user_env(name, value)
-
-    # Auto-add to managed whitelist if not present (legacy behavior — caller
-    # can refine binding via add_managed_key() / update_binding() after).
-    if name not in get_managed_keys():
-        add_managed_key(name)
 
 
 def delete_user_env(name: str) -> bool:

@@ -42,6 +42,7 @@ from env_manager import (
     get_managed_keys_full,
     get_managed_key,
     update_binding,
+    add_managed_key,
     ManagedKey,
 )
 from providers import PROVIDERS, get_provider_by_id, get_providers_by_category
@@ -248,11 +249,19 @@ async def list_managed_keys(q: Optional[str] = Query(None)):
     items = []
     for name, value in env.items():
         binding = get_managed_key(name)
+        provider_id = binding.provider if binding else ""
+        provider_name = ""
+        if provider_id:
+            # Resolve provider id → display name (e.g. "DEEPSEEK_API_KEY" → "DeepSeek")
+            p = get_provider_by_id(provider_id)
+            if p:
+                provider_name = p["name"]
         items.append({
             "name": name,
             "masked_value": _mask_value(value),
             "length": len(value),
-            "provider": binding.provider if binding else "",
+            "provider": provider_id,
+            "provider_name": provider_name,  # NIT-1: human-readable name for UI
             "base_url": binding.base_url if binding else "",
             "default_model": binding.default_model if binding else "",
             "has_binding": binding.has_binding() if binding else False,
@@ -298,19 +307,21 @@ async def create_key(payload: KeyCreate):
     except (ValueError, NotImplementedError, OSError) as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Apply provider binding if provided
-    if payload.provider or payload.base_url:
-        resolved_url = payload.base_url
-        if not resolved_url and payload.provider:
-            provider = get_provider_by_id(payload.provider)
-            if provider:
-                resolved_url = provider["base_url"]
-        add_managed_key(
-            payload.name,
-            provider=payload.provider,
-            base_url=resolved_url,
-            default_model=payload.default_model,
-        )
+    # Always add to the managed whitelist (one write, not two). The CRIT-3
+    # fix removed set_user_env's implicit auto-add; this is the single point
+    # that now handles whitelist membership. The binding fields are optional
+    # (empty strings are valid — user can configure them later).
+    resolved_url = payload.base_url
+    if not resolved_url and payload.provider:
+        provider = get_provider_by_id(payload.provider)
+        if provider:
+            resolved_url = provider["base_url"]
+    add_managed_key(
+        payload.name,
+        provider=payload.provider,
+        base_url=resolved_url,
+        default_model=payload.default_model,
+    )
 
     return {"name": payload.name, "ok": True}
 
@@ -448,7 +459,8 @@ async def import_env(payload: EnvImport):
                 value = value[1:-1]
 
         try:
-            set_user_env(name, value)  # set_user_env auto-adds to managed
+            set_user_env(name, value)
+            add_managed_key(name)  # explicit add (no auto-add in set_user_env anymore)
             created.append(name)
         except Exception as e:
             errors.append({"line": i, "content": line, "reason": str(e)})
@@ -566,7 +578,8 @@ async def chat(req: ChatRequest):
             status_code=400,
             detail=(
                 f"No known base URL for '{req.name}'. "
-                f"Pass 'base_url' in the request body, or add it to PROVIDER_BASE_URLS in main.py."
+                f"Pass 'base_url' in the request body, or set up a provider "
+                f"binding for this key via the Managed view (click the link icon)."
             ),
         )
 

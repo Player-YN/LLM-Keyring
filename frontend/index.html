@@ -175,6 +175,9 @@
       border-radius: var(--radius-lg);
       box-shadow: var(--shadow-lg);
       font-size: 13px;
+      max-width: 420px;
+      text-align: center;
+      white-space: pre-line;
       font-weight: 500;
       display: flex;
       align-items: center;
@@ -504,7 +507,7 @@
                 <template x-if="key.provider">
                   <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded" style="background: var(--bg-secondary);">
                     <i data-lucide="link" class="w-2.5 h-2.5"></i>
-                    <span x-text="key.provider"></span>
+                    <span x-text="key.provider_name || key.provider"></span>
                     <template x-if="key.default_model">
                       <span style="color: var(--text-tertiary);">·</span>
                     </template>
@@ -1073,38 +1076,55 @@
 
         <!-- Provider binding (only in create mode) -->
         <div x-show="modal.mode === 'create'">
-          <label class="block text-[11px] font-medium uppercase tracking-wide mb-1.5" style="color: var(--text-secondary);" x-text="t('bindingProvider')"></label>
-          <select
-            x-model="modal.provider"
-            @change="onModalProviderChange()"
-            class="input"
-            style="font-size: 13px;"
-          >
-            <option value="" x-text="t('bindingPickProvider')"></option>
-            <template x-for="cat in ['International', 'Aggregator', 'Chinese']" :key="cat">
-              <optgroup :label="cat">
-                <template x-for="p in modal.providersList.filter(x => x.category === cat)" :key="p.id">
-                  <option :value="p.id" x-text="p.name"></option>
-                </template>
-              </optgroup>
-            </template>
-          </select>
-          <div class="mt-2 grid grid-cols-2 gap-2">
-            <input
-              type="text"
-              x-model="modal.baseUrl"
-              :placeholder="t('bindingBaseUrl')"
-              class="input mono"
-              style="font-size: 12px;"
-            />
-            <input
-              type="text"
-              x-model="modal.defaultModel"
-              :placeholder="t('bindingModel')"
-              class="input mono"
-              style="font-size: 12px;"
-            />
+          <div class="flex items-center justify-between mb-1.5">
+            <label class="block text-[11px] font-medium uppercase tracking-wide" style="color: var(--text-secondary);" x-text="t('bindingProvider')"></label>
+            <button
+              type="button"
+              @click="modal.skipBinding = !modal.skipBinding"
+              class="text-[11px] underline"
+              style="color: var(--text-tertiary);"
+              x-text="modal.skipBinding ? t('bindingUnskip') : t('bindingSkip')"
+            ></button>
           </div>
+          <div x-show="!modal.skipBinding">
+            <select
+              x-model="modal.provider"
+              @change="onModalProviderChange()"
+              class="input"
+              style="font-size: 13px;"
+            >
+              <option value="" x-text="t('bindingPickProvider')"></option>
+              <template x-for="cat in ['International', 'Aggregator', 'Chinese']" :key="cat">
+                <optgroup :label="cat">
+                  <template x-for="p in modal.providersList.filter(x => x.category === cat)" :key="p.id">
+                    <option :value="p.id" x-text="p.name"></option>
+                  </template>
+                </optgroup>
+              </template>
+            </select>
+            <div class="mt-2 grid grid-cols-2 gap-2">
+              <input
+                type="text"
+                x-model="modal.baseUrl"
+                :placeholder="t('bindingBaseUrl')"
+                class="input mono"
+                style="font-size: 12px;"
+              />
+              <input
+                type="text"
+                x-model="modal.defaultModel"
+                :placeholder="t('bindingModel')"
+                class="input mono"
+                style="font-size: 12px;"
+              />
+            </div>
+          </div>
+          <p
+            x-show="modal.skipBinding"
+            class="text-[11px] px-3 py-2 rounded-lg"
+            style="background: var(--bg-secondary); color: var(--text-secondary);"
+            x-text="t('bindingSkipHint')"
+          ></p>
         </div>
       </div>
       <div class="px-6 py-4 flex justify-end gap-2" style="background: var(--bg-input);">
@@ -1353,6 +1373,9 @@
         bindingBaseUrlHint: 'Auto-filled from preset; edit if your endpoint differs.',
         bindingModel: 'Default model',
         bindingSave: 'Save binding',
+        bindingSkip: 'Skip for now',
+        bindingUnskip: 'Set up provider',
+        bindingSkipHint: 'Saved as a raw env var. Set up the provider later via the Set up provider chip in the Managed view.',
         alreadyManaged: 'managed',
         unclearMatch: 'Unclear — please verify',
         allCaughtUp: 'All caught up!',
@@ -1454,6 +1477,9 @@
         bindingBaseUrlHint: '默认从 preset 填充，如果你的 endpoint 不一样请修改。',
         bindingModel: '默认模型',
         bindingSave: '保存绑定',
+        bindingSkip: '暂时跳过',
+        bindingUnskip: '设置 provider',
+        bindingSkipHint: '会作为普通 env var 保存。稍后通过 Managed view 里的"设置 provider"标签绑定。',
       },
     };
 
@@ -1681,7 +1707,7 @@
           this.modal = {
             open: true, mode: 'create', name: '', value: '', error: '',
             showValue: false, provider: '', baseUrl: '', defaultModel: '',
-            providersList: [],
+            providersList: [], skipBinding: false,
           };
           // Pre-load provider list for the binding selector
           try {
@@ -1733,8 +1759,11 @@
 
           try {
             const body = { name, value };
-            // In create mode, attach binding fields if user picked a provider
-            if (!isEdit && this.modal.provider) {
+            // In create mode, attach binding fields ONLY if user picked a
+            // provider AND didn't click "Skip for now". Skipping produces
+            // a binding-less managed key (still fully usable as an env var).
+            const willBind = !isEdit && !this.modal.skipBinding && this.modal.provider;
+            if (willBind) {
               body.provider = this.modal.provider;
               body.base_url = this.modal.baseUrl || '';
               body.default_model = this.modal.defaultModel || '';
@@ -1748,7 +1777,27 @@
               const err = await r.json().catch(() => ({ detail: r.statusText }));
               throw new Error(err.detail || 'Failed');
             }
-            this.showToast(isEdit ? (this.lang === 'zh' ? `已更新 ${name}` : `Updated ${name}`) : (this.lang === 'zh' ? `已添加 ${name}` : `Added ${name}`), 'success');
+            // Two-line toast: line 1 = the env var (the key), line 2 = the
+            // binding (the "how to use" metadata) — or absence thereof.
+            // Makes the two-write distinction visible to the user.
+            if (isEdit) {
+              this.showToast(this.lang === 'zh' ? `已更新 ${name}` : `Updated ${name}`, 'success');
+            } else if (willBind) {
+              const providerName = (this.modal.providersList.find(p => p.id === this.modal.provider) || {}).name || this.modal.provider;
+              this.showToast(
+                this.lang === 'zh'
+                  ? `${name} 已保存为 env var\n绑定 ${providerName} 已记录`
+                  : `Set ${name} as env var\nBound to ${providerName}`,
+                'success', 3500
+              );
+            } else {
+              this.showToast(
+                this.lang === 'zh'
+                  ? `${name} 已保存为 env var\n未设置 provider（稍后可在 Managed view 绑定）`
+                  : `Set ${name} as env var\nNo provider bound (set up later in Managed view)`,
+                'success', 3500
+              );
+            }
             this.closeModal();
             await Promise.all([this.refresh(), this.loadDiscover()]);
           } catch (e) {
@@ -1994,17 +2043,22 @@
         },
 
         async quickBind(name) {
-          // Jump to Chat tab with this key selected, then open binding prompt
+          // Set the chat tab's current key + resolve its binding so the
+          // modal pre-fills correctly, then open the binding-setup modal.
+          // Do NOT switch the active view — quickBind is wired to buttons
+          // on the Managed view, and yanking the user out of Managed (and
+          // losing their search filter / scroll position) is jarring.
           this.chatState.keyName = name;
           await this.onChatKeyChange();
           await this.openBindingPrompt();
-          // Also switch view to chat so user sees the modal context
-          this.view = 'chat';
         },
 
         async openBindingPrompt() {
           // Open the one-time binding-setup modal. Loads providers list if needed.
           if (!this.chatState.keyName) return;
+          // NIT-11: reset BEFORE the await so the dropdown shows empty
+          // for the moment of cache-miss; gets re-populated after fetch.
+          this.chatState.pendingProvider = '';
           if (!this.chatState.providersCache.length) {
             try {
               const r = await fetch('/api/providers');
@@ -2018,17 +2072,34 @@
               return;
             }
           }
-          // Pre-fill with the current best guess
-          this.chatState.pendingProvider = '';
+          // IMP-5: pre-fill pendingProvider with the existing binding's
+          // provider id (so re-saving an existing binding doesn't require
+          // re-picking from the 26-entry dropdown).
+          // We look it up from /api/keys to get the persisted binding,
+          // not from chatState.pendingProvider which we just cleared.
+          try {
+            const r = await fetch('/api/keys');
+            const data = await r.json();
+            const item = (data.items || []).find(k => k.name === this.chatState.keyName);
+            if (item && item.provider) {
+              this.chatState.pendingProvider = item.provider;
+            }
+          } catch (e) {
+            // best-effort, fall through with empty pendingProvider
+          }
           this.chatState.showBindingPrompt = true;
           this.$nextTick(() => this.initIcons());
         },
 
         onPendingProviderChange() {
-          // When user picks a provider, auto-fill base URL + first model
+          // When user picks a provider, auto-fill base URL + first model —
+          // BUT preserve any value the user already typed in the input (don't
+          // silently overwrite a custom URL like Azure's
+          // https://my-resource.openai.azure.com/ with the preset URL).
+          // Matches the guard used in onModalProviderChange.
           const p = this.chatState.providersCache.find(x => x.id === this.chatState.pendingProvider);
           if (p) {
-            if (p.base_url) this.chatState.baseUrl = p.base_url;
+            if (p.base_url && !this.chatState.baseUrl) this.chatState.baseUrl = p.base_url;
             if (!this.chatState.model && p.models?.length) {
               this.chatState.model = p.models[0];
             }
