@@ -499,6 +499,29 @@
               <div class="mt-0.5">
                 <code class="mono text-[11.5px]" style="color: var(--text-secondary);" x-text="key.masked_value"></code>
               </div>
+              <!-- Provider binding display -->
+              <div class="mt-1.5 flex items-center gap-1.5 text-[11px]" style="color: var(--text-tertiary);">
+                <template x-if="key.provider">
+                  <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded" style="background: var(--bg-secondary);">
+                    <i data-lucide="link" class="w-2.5 h-2.5"></i>
+                    <span x-text="key.provider"></span>
+                    <template x-if="key.default_model">
+                      <span style="color: var(--text-tertiary);">·</span>
+                    </template>
+                    <template x-if="key.default_model">
+                      <code class="mono" style="font-size: 10px;" x-text="key.default_model"></code>
+                    </template>
+                  </span>
+                </template>
+                <template x-if="!key.has_binding">
+                  <button
+                    @click="quickBind(key.name)"
+                    class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+                    style="background: rgba(255, 149, 0, 0.12); color: #ff9500;"
+                    x-text="'⚠ ' + t('chatSetupBinding')"
+                  ></button>
+                </template>
+              </div>
             </div>
 
             <!-- Actions -->
@@ -508,6 +531,9 @@
               </button>
               <button @click="showValue(key.name)" class="btn btn-icon" :title="t('show')">
                 <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+              </button>
+              <button @click="quickBind(key.name)" class="btn btn-icon" :title="t('bindingTitle')">
+                <i data-lucide="link-2" class="w-3.5 h-3.5"></i>
               </button>
               <button @click="openEdit(key.name)" class="btn btn-icon" :title="t('edit')">
                 <i data-lucide="pencil" class="w-3.5 h-3.5"></i>
@@ -768,6 +794,29 @@
 
           <!-- Test button + capability matrix -->
           <div class="pt-2" style="border-top: 1px solid var(--border);">
+            <!-- Binding status / one-time setup prompt -->
+            <div
+              x-show="chatState.keyName && !chatState.hasBinding"
+              class="mb-3 p-3 rounded-xl"
+              style="background: rgba(255, 149, 0, 0.08); border: 1px solid rgba(255, 149, 0, 0.25);"
+            >
+              <div class="flex items-start gap-2 mb-2">
+                <i data-lucide="alert-circle" class="w-4 h-4 flex-shrink-0 mt-0.5" style="color: #ff9500;"></i>
+                <div class="flex-1">
+                  <div class="text-[12px] font-medium" style="color: var(--text-primary);" x-text="t('chatNoBindingTitle')"></div>
+                  <div class="text-[11px] mt-1" style="color: var(--text-secondary);" x-text="t('chatNoBindingDesc')"></div>
+                </div>
+              </div>
+              <button
+                @click="openBindingPrompt()"
+                class="btn w-full"
+                style="justify-content: center; background: #ff9500; color: white; padding: 6px 12px;"
+              >
+                <i data-lucide="link" class="w-3.5 h-3.5"></i>
+                <span x-text="t('chatSetupBinding')"></span>
+              </button>
+            </div>
+
             <button
               @click="testChatKey()"
               class="btn btn-primary w-full"
@@ -1021,6 +1070,42 @@
             ></button>
           </div>
         </div>
+
+        <!-- Provider binding (only in create mode) -->
+        <div x-show="modal.mode === 'create'">
+          <label class="block text-[11px] font-medium uppercase tracking-wide mb-1.5" style="color: var(--text-secondary);" x-text="t('bindingProvider')"></label>
+          <select
+            x-model="modal.provider"
+            @change="onModalProviderChange()"
+            class="input"
+            style="font-size: 13px;"
+          >
+            <option value="" x-text="t('bindingPickProvider')"></option>
+            <template x-for="cat in ['International', 'Aggregator', 'Chinese']" :key="cat">
+              <optgroup :label="cat">
+                <template x-for="p in modal.providersList.filter(x => x.category === cat)" :key="p.id">
+                  <option :value="p.id" x-text="p.name"></option>
+                </template>
+              </optgroup>
+            </template>
+          </select>
+          <div class="mt-2 grid grid-cols-2 gap-2">
+            <input
+              type="text"
+              x-model="modal.baseUrl"
+              :placeholder="t('bindingBaseUrl')"
+              class="input mono"
+              style="font-size: 12px;"
+            />
+            <input
+              type="text"
+              x-model="modal.defaultModel"
+              :placeholder="t('bindingModel')"
+              class="input mono"
+              style="font-size: 12px;"
+            />
+          </div>
+        </div>
       </div>
       <div class="px-6 py-4 flex justify-end gap-2" style="background: var(--bg-input);">
         <button @click="closeModal()" class="btn" x-text="t('cancel')"></button>
@@ -1098,6 +1183,96 @@
     </div>
   </div>
 
+  <!-- ============ BINDING SETUP MODAL (one-time per key) ============ -->
+  <div
+    x-show="chatState.showBindingPrompt"
+    class="modal-overlay"
+    @click.self="chatState.showBindingPrompt = false"
+    @keydown.escape.window="chatState.showBindingPrompt = false"
+    x-transition.opacity
+  >
+    <div class="modal-content" style="max-width: 480px;" @click.stop>
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="text-[16px] font-semibold" x-text="t('bindingTitle')"></h3>
+          <p class="text-[12px] mt-1" style="color: var(--text-secondary);">
+            <code class="mono" x-text="chatState.keyName"></code>
+          </p>
+        </div>
+        <button
+          @click="chatState.showBindingPrompt = false"
+          class="btn btn-icon"
+        ><i data-lucide="x" class="w-4 h-4"></i></button>
+      </div>
+
+      <p class="text-[12px] mb-4" style="color: var(--text-secondary);" x-text="t('bindingDesc')"></p>
+
+      <div class="space-y-3">
+        <div>
+          <label class="block text-[11px] font-semibold uppercase tracking-wider mb-1.5" style="color: var(--text-tertiary);">
+            <span x-text="t('bindingProvider')"></span>
+          </label>
+          <select
+            x-model="chatState.pendingProvider"
+            @change="onPendingProviderChange()"
+            class="w-full px-3 py-2 rounded-xl text-[13px]"
+            style="background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);"
+          >
+            <option value="" x-text="t('bindingPickProvider')"></option>
+            <template x-for="cat in ['International', 'Aggregator', 'Chinese']" :key="cat">
+              <optgroup :label="cat">
+                <template x-for="p in chatState.providersCache.filter(x => x.category === cat)" :key="p.id">
+                  <option :value="p.id" x-text="p.name"></option>
+                </template>
+              </optgroup>
+            </template>
+          </select>
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-semibold uppercase tracking-wider mb-1.5" style="color: var(--text-tertiary);">
+            <span x-text="t('bindingBaseUrl')"></span>
+          </label>
+          <input
+            type="text"
+            x-model="chatState.baseUrl"
+            class="w-full px-3 py-2 rounded-xl text-[13px] mono"
+            style="background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);"
+            placeholder="https://api.example.com/v1"
+          />
+          <p class="text-[10px] mt-1" style="color: var(--text-tertiary);" x-text="t('bindingBaseUrlHint')"></p>
+        </div>
+
+        <div>
+          <label class="block text-[11px] font-semibold uppercase tracking-wider mb-1.5" style="color: var(--text-tertiary);">
+            <span x-text="t('bindingModel')"></span>
+          </label>
+          <input
+            type="text"
+            x-model="chatState.model"
+            class="w-full px-3 py-2 rounded-xl text-[13px] mono"
+            style="background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);"
+            placeholder="gpt-4o"
+          />
+        </div>
+      </div>
+
+      <div class="flex justify-end gap-2 mt-6">
+        <button
+          @click="chatState.showBindingPrompt = false"
+          class="btn"
+          x-text="t('cancel')"
+        ></button>
+        <button
+          @click="saveBindingFromChat()"
+          class="btn btn-primary"
+          :disabled="!chatState.pendingProvider || !chatState.baseUrl"
+          x-text="t('bindingSave')"
+        ></button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ ALPINE.JS APP ============ -->
   <script>
     // ===== i18n dictionary =====
@@ -1167,6 +1342,17 @@
         chatNoKey: 'Pick a key first',
         chatNoBaseUrl: 'Could not resolve a base URL for this key. Enter one above.',
         chatFailed: 'Chat request failed',
+        chatNoBindingTitle: 'No provider bound yet',
+        chatNoBindingDesc: 'This key is missing its provider binding. Pick a provider once — it will be saved and used for future chats.',
+        chatSetupBinding: 'Set up provider',
+        bindingTitle: 'Set up provider binding',
+        bindingDesc: 'Choose a provider once. The binding is saved to this key and used automatically in the future.',
+        bindingProvider: 'Provider',
+        bindingPickProvider: '— pick a provider —',
+        bindingBaseUrl: 'Base URL',
+        bindingBaseUrlHint: 'Auto-filled from preset; edit if your endpoint differs.',
+        bindingModel: 'Default model',
+        bindingSave: 'Save binding',
         alreadyManaged: 'managed',
         unclearMatch: 'Unclear — please verify',
         allCaughtUp: 'All caught up!',
@@ -1257,6 +1443,17 @@
         chatNoKey: '请先选一个 key',
         chatNoBaseUrl: '无法识别这个 key 的 Base URL，请在上方手动填写',
         chatFailed: '请求失败',
+        chatNoBindingTitle: '尚未绑定 provider',
+        chatNoBindingDesc: '这个 key 还没有 provider 绑定。选一次即可，下次会自动用上。',
+        chatSetupBinding: '设置 provider',
+        bindingTitle: '设置 provider 绑定',
+        bindingDesc: '选一个 provider，绑定会保存到这个 key，以后自动使用。',
+        bindingProvider: 'Provider',
+        bindingPickProvider: '— 请选择 —',
+        bindingBaseUrl: 'Base URL',
+        bindingBaseUrlHint: '默认从 preset 填充，如果你的 endpoint 不一样请修改。',
+        bindingModel: '默认模型',
+        bindingSave: '保存绑定',
       },
     };
 
@@ -1290,10 +1487,15 @@
           testing: false,
           loadingModels: false,
           testResult: null,
+          // Provider-binding state (v2 schema)
+          hasBinding: false,           // does the current key have a saved binding?
+          showBindingPrompt: false,    // show the one-time binding-setup modal?
+          pendingProvider: '',         // user-selected provider id in the binding modal
+          providersCache: [],          // cached list of providers for the binding modal
         },
 
         toast: { visible: false, message: '', type: 'info' },
-        modal: { open: false, mode: 'create', name: '', value: '', error: '', showValue: false },
+        modal: { open: false, mode: 'create', name: '', value: '', error: '', showValue: false, provider: '', baseUrl: '', defaultModel: '', providersList: [] },
         showValueModal: { open: false, name: '', value: '' },
         importModal: { open: false, content: '' },
         confirmDeleteModal: { open: false, name: '' },
@@ -1475,9 +1677,27 @@
         },
 
         // ===== Add / Edit =====
-        openAdd() {
-          this.modal = { open: true, mode: 'create', name: '', value: '', error: '', showValue: false };
+        async openAdd() {
+          this.modal = {
+            open: true, mode: 'create', name: '', value: '', error: '',
+            showValue: false, provider: '', baseUrl: '', defaultModel: '',
+            providersList: [],
+          };
+          // Pre-load provider list for the binding selector
+          try {
+            const r = await fetch('/api/providers');
+            const data = await r.json();
+            this.modal.providersList = data.providers || [];
+          } catch {}
           this.$nextTick(() => this.initIcons());
+        },
+
+        onModalProviderChange() {
+          const p = this.modal.providersList.find(x => x.id === this.modal.provider);
+          if (p) {
+            if (p.base_url && !this.modal.baseUrl) this.modal.baseUrl = p.base_url;
+            if (p.models?.length && !this.modal.defaultModel) this.modal.defaultModel = p.models[0];
+          }
         },
 
         async openEdit(name) {
@@ -1512,10 +1732,17 @@
           const method = isEdit ? 'PUT' : 'POST';
 
           try {
+            const body = { name, value };
+            // In create mode, attach binding fields if user picked a provider
+            if (!isEdit && this.modal.provider) {
+              body.provider = this.modal.provider;
+              body.base_url = this.modal.baseUrl || '';
+              body.default_model = this.modal.defaultModel || '';
+            }
             const r = await fetch(url, {
               method,
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name, value }),
+              body: JSON.stringify(body),
             });
             if (!r.ok) {
               const err = await r.json().catch(() => ({ detail: r.statusText }));
@@ -1717,34 +1944,129 @@
 
         // ===== Chat =====
         async onChatKeyChange() {
-          // Try to resolve base URL + model suggestions from /api/providers
+          // Resolve base URL + model from the user's persisted binding
+          // (managed_keys.json). Falls back to /api/providers preset by key
+          // name if no binding exists yet (binding-edit UI will prompt user).
           if (!this.chatState.keyName) {
             this.chatState.baseUrl = '';
             this.chatState.modelSuggestions = [];
+            this.chatState.hasBinding = false;
             return;
           }
           this.chatState.testResult = null;
           try {
-            const r = await fetch('/api/providers');
+            // Look up the key's binding from /api/keys
+            const r = await fetch('/api/keys');
             const data = await r.json();
+            const item = (data.items || []).find(k => k.name === this.chatState.keyName);
+            if (item && item.has_binding) {
+              // User has a binding — use it
+              if (!this.chatState.baseUrl && item.base_url) {
+                this.chatState.baseUrl = item.base_url;
+              }
+              if (!this.chatState.model && item.default_model) {
+                this.chatState.model = item.default_model;
+              }
+              this.chatState.hasBinding = true;
+            } else {
+              this.chatState.hasBinding = false;
+            }
+
+            // Always load model suggestions from /api/providers (fallback list)
+            const rp = await fetch('/api/providers');
+            const pd = await rp.json();
             const upper = this.chatState.keyName.toUpperCase();
-            const match = data.providers.find(p =>
-              p.name === this.chatState.keyName ||
-              p.name.toUpperCase() === upper ||
-              upper.startsWith(p.name.toUpperCase().replace(/_API_KEY$|_TOKEN$/, '')) ||
-              p.name.toUpperCase().replace(/_API_KEY$|_TOKEN$/, '').startsWith(upper)
+            const match = (pd.providers || []).find(p =>
+              p.id === this.chatState.keyName ||
+              p.id.toUpperCase() === upper ||
+              upper.startsWith(p.id.toUpperCase().replace(/_API_KEY$|_TOKEN$/, '')) ||
+              p.id.toUpperCase().replace(/_API_KEY$|_TOKEN$/, '').startsWith(upper)
             );
             if (match) {
-              if (!this.chatState.baseUrl && match.base_url) {
-                this.chatState.baseUrl = match.base_url;
-              }
-              this.chatState.modelSuggestions = match.default_models || [];
-              if (!this.chatState.model && match.default_models?.length) {
-                this.chatState.model = match.default_models[0];
+              this.chatState.modelSuggestions = match.models || [];
+              if (!this.chatState.model && match.models?.length) {
+                this.chatState.model = match.models[0];
               }
             }
           } catch (e) {
             // best-effort
+          }
+        },
+
+        async quickBind(name) {
+          // Jump to Chat tab with this key selected, then open binding prompt
+          this.chatState.keyName = name;
+          await this.onChatKeyChange();
+          await this.openBindingPrompt();
+          // Also switch view to chat so user sees the modal context
+          this.view = 'chat';
+        },
+
+        async openBindingPrompt() {
+          // Open the one-time binding-setup modal. Loads providers list if needed.
+          if (!this.chatState.keyName) return;
+          if (!this.chatState.providersCache.length) {
+            try {
+              const r = await fetch('/api/providers');
+              const data = await r.json();
+              this.chatState.providersCache = data.providers || [];
+            } catch (e) {
+              this.showToast(
+                (this.lang === 'zh' ? '加载 provider 失败: ' : 'Failed to load providers: ') + e.message,
+                'error'
+              );
+              return;
+            }
+          }
+          // Pre-fill with the current best guess
+          this.chatState.pendingProvider = '';
+          this.chatState.showBindingPrompt = true;
+          this.$nextTick(() => this.initIcons());
+        },
+
+        onPendingProviderChange() {
+          // When user picks a provider, auto-fill base URL + first model
+          const p = this.chatState.providersCache.find(x => x.id === this.chatState.pendingProvider);
+          if (p) {
+            if (p.base_url) this.chatState.baseUrl = p.base_url;
+            if (!this.chatState.model && p.models?.length) {
+              this.chatState.model = p.models[0];
+            }
+          }
+        },
+
+        async saveBindingFromChat() {
+          // One-time setup: persist the user's provider choice from Chat tab
+          if (!this.chatState.keyName) return;
+          if (!this.chatState.pendingProvider) {
+            this.showToast(this.lang === 'zh' ? '请选择 provider' : 'Please pick a provider', 'error');
+            return;
+          }
+          try {
+            const r = await fetch(`/api/keys/${encodeURIComponent(this.chatState.keyName)}/binding`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                provider: this.chatState.pendingProvider,
+                base_url: this.chatState.baseUrl || '',
+                default_model: this.chatState.model || '',
+              }),
+            });
+            if (!r.ok) {
+              const err = await r.json().catch(() => ({}));
+              throw new Error(err.detail || `HTTP ${r.status}`);
+            }
+            this.chatState.hasBinding = true;
+            this.chatState.showBindingPrompt = false;
+            this.showToast(
+              this.lang === 'zh' ? '绑定已保存' : 'Binding saved',
+              'success'
+            );
+          } catch (e) {
+            this.showToast(
+              (this.lang === 'zh' ? '保存失败: ' : 'Save failed: ') + e.message,
+              'error'
+            );
           }
         },
 

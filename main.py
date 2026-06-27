@@ -39,104 +39,85 @@ from env_manager import (
     adopt_keys_bulk,
     is_managed,
     get_managed_keys,
+    get_managed_keys_full,
+    get_managed_key,
+    update_binding,
+    ManagedKey,
 )
+from providers import PROVIDERS, get_provider_by_id, get_providers_by_category
 from chat import probe_capabilities, stream_chat, fetch_models
 from fastapi.responses import StreamingResponse
 
 
 # ============================================================
-# Provider metadata (key name → default base URL + display name)
-# Used by /api/chat and /api/test to know where to send requests
-# without making the user type the endpoint every time.
+# Provider binding resolution
 # ============================================================
-
-PROVIDER_BASE_URLS: Dict[str, str] = {
-    # International
-    "OPENAI_API_KEY":           "https://api.openai.com/v1",
-    "ANTHROPIC_API_KEY":        "https://api.anthropic.com/v1",
-    "GOOGLE_API_KEY":           "https://generativelanguage.googleapis.com/v1beta",
-    "MISTRAL_API_KEY":          "https://api.mistral.ai/v1",
-    "COHERE_API_KEY":           "https://api.cohere.ai/v1",
-    "GROQ_API_KEY":             "https://api.groq.com/openai/v1",
-    "PERPLEXITY_API_KEY":       "https://api.perplexity.ai",
-    "XAI_API_KEY":              "https://api.x.ai/v1",
-    "DEEPSEEK_API_KEY":         "https://api.deepseek.com/v1",
-    "MOONSHOT_API_KEY":         "https://api.moonshot.cn/v1",
-    # Aggregators (all OpenAI-compatible)
-    "OPENROUTER_API_KEY":       "https://openrouter.ai/api/v1",
-    "TOGETHER_API_KEY":         "https://api.together.xyz/v1",
-    "FIREWORKS_API_KEY":        "https://api.fireworks.ai/inference/v1",
-    "REPLICATE_API_TOKEN":      "https://api.replicate.com/v1",
-    "HF_TOKEN":                 "https://router.huggingface.co/v1",
-    "ANTHROPIC_VERTEX_API_KEY": "https://us-central1-aiplatform.googleapis.com/v1",
-    "AZURE_OPENAI_API_KEY":     "",  # User must provide
-    "AWS_BEDROCK_API_KEY":      "",  # User must provide
-    "ANYSCALE_API_KEY":         "https://api.endpoints.anyscale.com/v1",
-    # Chinese
-    "SILICONFLOW_API_KEY":      "https://api.siliconflow.cn/v1",
-    "ARK_API_KEY":              "https://ark.cn-beijing.volces.com/api/v3",
-    "ZHIPUAI_API_KEY":          "https://open.bigmodel.cn/api/paas/v4",
-    "QIANFAN_API_KEY":          "https://qianfan.baidubce.com/v2",
-    "DASHSCOPE_API_KEY":        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    # Agnes (free, multimodal, Singapore)
-    "AGNES_API_KEY":            "https://apihub.agnes-ai.com/v1",
-}
-
-# Common model hints per provider (used to populate the model dropdown
-# when /v1/models is not available or empty)
-PROVIDER_DEFAULT_MODELS: Dict[str, List[str]] = {
-    "OPENAI_API_KEY":     ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
-    "ANTHROPIC_API_KEY":  ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
-    "GOOGLE_API_KEY":     ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
-    "GROQ_API_KEY":       ["llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
-    "DEEPSEEK_API_KEY":   ["deepseek-chat", "deepseek-reasoner"],
-    "OPENROUTER_API_KEY": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "meta-llama/llama-3.1-70b-instruct"],
-    "MOONSHOT_API_KEY":   ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
-    "SILICONFLOW_API_KEY": ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3", "Pro/Qwen/Qwen2-7B-Instruct"],
-    "ARK_API_KEY":        ["doubao-pro-32k", "doubao-lite-32k"],
-    "DASHSCOPE_API_KEY":  ["qwen-plus", "qwen-turbo", "qwen-max"],
-    "ZHIPUAI_API_KEY":    ["glm-4-plus", "glm-4-flash", "glm-4"],
-    "AGNES_API_KEY":      ["agnes-2.0-flash", "agnes-1.5-flash"],
-}
+#
+# The base URL / model for a managed key comes from the user's binding
+# (stored in managed_keys.json). If the binding is missing, we fall back
+# to the provider's preset default using the binding's "provider" name,
+# or — last resort — to looking up by key name in PROVIDERS.
+# ============================================================
 
 
 def _resolve_base_url(name: str, override: Optional[str]) -> str:
-    """Return the base URL for a managed key. User override wins, else preset.
+    """
+    Return the base URL for a managed key.
 
-    Match priority:
-      1. Exact match
-      2. Case-insensitive exact match ("Agnes" → "AGNES_API_KEY" if exact keys differ)
-      3. Case-insensitive prefix match ("Agnes" → "AGNES_API_KEY" since
-         AGNES starts with "AGNES" / "Agnes" starts with "AGNES")
-      4. Return "" (caller raises 400)
+    Priority:
+      1. Caller-supplied override (request body)
+      2. User's persisted binding (managed_keys.json)
+      3. Preset default from PROVIDERS by the binding's "provider" name
+      4. Preset default by the key NAME matching a provider id (legacy fallback)
+      5. Return "" (caller raises 400)
     """
     if override:
         return override.rstrip("/")
-    if name in PROVIDER_BASE_URLS:
-        return PROVIDER_BASE_URLS[name]
-    # Case-insensitive exact
+
+    # 2. User's explicit binding (this is the v2 contract)
+    binding = get_managed_key(name)
+    if binding and binding.base_url:
+        return binding.base_url
+
+    # 3. Fall back: if binding exists with provider name, look up its preset URL
+    if binding and binding.provider:
+        provider = get_provider_by_id(binding.provider)
+        if provider and provider["base_url"]:
+            return provider["base_url"]
+
+    # 4. Legacy fallback: match by key name to a provider id
     upper = name.upper()
-    for k, v in PROVIDER_BASE_URLS.items():
-        if k.upper() == upper:
-            return v
-    # Case-insensitive prefix (e.g., "Agnes" matches "AGNES_API_KEY")
-    for k, v in PROVIDER_BASE_URLS.items():
-        if k.upper().startswith(upper + "_") or upper.startswith(k.upper().rstrip("_") + "_"):
-            return v
+    for p in PROVIDERS:
+        if p["id"].upper() == upper and p["base_url"]:
+            return p["base_url"]
+
     return ""
 
 
 def _resolve_default_models(name: str) -> List[str]:
-    """Return default model list for a key, with case-insensitive matching."""
-    if name in PROVIDER_DEFAULT_MODELS:
-        return PROVIDER_DEFAULT_MODELS[name]
+    """
+    Return default model hints for a managed key.
+
+    Priority:
+      1. User's binding's default_model (single string, returned as [str])
+      2. Preset models by binding.provider
+      3. Preset models by key name (legacy fallback)
+      4. Empty list
+    """
+    binding = get_managed_key(name)
+    if binding:
+        if binding.default_model:
+            return [binding.default_model]
+        if binding.provider:
+            provider = get_provider_by_id(binding.provider)
+            if provider:
+                return list(provider["models"])
+
     upper = name.upper()
-    for k, v in PROVIDER_DEFAULT_MODELS.items():
-        if k.upper() == upper:
-            return v
-    for k, v in PROVIDER_DEFAULT_MODELS.items():
-        if k.upper().startswith(upper + "_") or upper.startswith(k.upper().rstrip("_") + "_"):
-            return v
+    for p in PROVIDERS:
+        if p["id"].upper() == upper:
+            return list(p["models"])
+
     return []
 
 
@@ -159,18 +140,41 @@ APP_TAGLINE = "Manage LLM API keys as OS env vars. Only what you mark."
 class KeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=256)
     value: str = Field(..., min_length=1)
+    provider: str = Field("", description="Provider ID from /api/providers (e.g. 'OPENAI_API_KEY')")
+    base_url: str = Field("", description="Override base URL; empty = use provider preset")
+    default_model: str = Field("", description="Default model for this key")
 
 
 class KeyUpdate(BaseModel):
     value: str = Field(..., min_length=1)
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    default_model: Optional[str] = None
+
+
+class BindingUpdate(BaseModel):
+    """Update only the provider binding for an existing managed key."""
+    provider: str = Field("", description="Provider ID")
+    base_url: str = Field("", description="Base URL (can override the preset)")
+    default_model: str = Field("", description="Default model")
 
 
 class EnvImport(BaseModel):
     content: str
 
 
+class AdoptItem(BaseModel):
+    name: str
+    provider: str = ""
+    base_url: str = ""
+    default_model: str = ""
+
+
 class AdoptRequest(BaseModel):
-    names: List[str]
+    """Adopt one or more keys with optional provider bindings."""
+    items: List[AdoptItem] = Field(default_factory=list)
+    # Legacy support: allow plain list of names (no binding)
+    names: Optional[List[str]] = None
 
 
 class UnadoptRequest(BaseModel):
@@ -192,36 +196,15 @@ class TestRequest(BaseModel):
 
 
 # ============================================================
-# Preset templates (24 entries)
+# Preset templates — derived from providers.py (single source of truth)
 # ============================================================
 
-PRESET_TEMPLATES: List[Dict[str, str]] = [
-    {"name": "OPENAI_API_KEY",          "provider": "OpenAI",                        "category": "International"},
-    {"name": "ANTHROPIC_API_KEY",       "provider": "Anthropic (Claude)",            "category": "International"},
-    {"name": "GOOGLE_API_KEY",          "provider": "Google Gemini",                 "category": "International"},
-    {"name": "MISTRAL_API_KEY",         "provider": "Mistral AI",                    "category": "International"},
-    {"name": "COHERE_API_KEY",          "provider": "Cohere",                        "category": "International"},
-    {"name": "GROQ_API_KEY",            "provider": "Groq",                          "category": "International"},
-    {"name": "PERPLEXITY_API_KEY",      "provider": "Perplexity",                    "category": "International"},
-    {"name": "XAI_API_KEY",             "provider": "xAI (Grok)",                    "category": "International"},
-    {"name": "DEEPSEEK_API_KEY",        "provider": "DeepSeek",                      "category": "International"},
-    {"name": "MOONSHOT_API_KEY",        "provider": "Moonshot (Kimi)",               "category": "International"},
-    {"name": "OPENROUTER_API_KEY",      "provider": "OpenRouter",                    "category": "Aggregator"},
-    {"name": "TOGETHER_API_KEY",        "provider": "Together AI",                   "category": "Aggregator"},
-    {"name": "FIREWORKS_API_KEY",       "provider": "Fireworks AI",                  "category": "Aggregator"},
-    {"name": "REPLICATE_API_TOKEN",     "provider": "Replicate",                     "category": "Aggregator"},
-    {"name": "HF_TOKEN",                "provider": "Hugging Face Hub",              "category": "Aggregator"},
-    {"name": "ANTHROPIC_VERTEX_API_KEY","provider": "Vertex AI (Claude)",            "category": "Aggregator"},
-    {"name": "AZURE_OPENAI_API_KEY",    "provider": "Azure OpenAI",                  "category": "Aggregator"},
-    {"name": "AWS_BEDROCK_API_KEY",     "provider": "AWS Bedrock",                   "category": "Aggregator"},
-    {"name": "ANYSCALE_API_KEY",        "provider": "Anyscale Endpoints",            "category": "Aggregator"},
-    {"name": "SILICONFLOW_API_KEY",     "provider": "硅基流动 (SiliconFlow)",        "category": "Chinese"},
-    {"name": "ARK_API_KEY",             "provider": "火山方舟 (Ark) / Coding Plan",  "category": "Chinese"},
-    {"name": "ZHIPUAI_API_KEY",         "provider": "智谱 BigModel",                 "category": "Chinese"},
-    {"name": "QIANFAN_API_KEY",         "provider": "百度千帆",                       "category": "Chinese"},
-    {"name": "DASHSCOPE_API_KEY",       "provider": "阿里 DashScope (通义千问)",      "category": "Chinese"},
-    {"name": "AGNES_API_KEY",            "provider": "Agnes AI (新加坡全模态,免费)",     "category": "International"},
-]
+def _preset_templates() -> List[Dict[str, str]]:
+    """Convert the providers registry into the preset shape used by the UI."""
+    return [
+        {"name": p["id"], "provider": p["name"], "category": p["category"]}
+        for p in PROVIDERS
+    ]
 
 
 # ============================================================
@@ -255,16 +238,25 @@ async def index():
 
 @app.get("/api/keys")
 async def list_managed_keys(q: Optional[str] = Query(None)):
-    """List ONLY managed keys (the default view)."""
+    """List ONLY managed keys (the default view), with provider binding info."""
     env = read_managed_env()
     if q:
         q_lower = q.lower()
         env = {k: v for k, v in env.items() if q_lower in k.lower()}
 
-    items = [
-        {"name": name, "masked_value": _mask_value(value), "length": len(value)}
-        for name, value in env.items()
-    ]
+    # Build items with binding info
+    items = []
+    for name, value in env.items():
+        binding = get_managed_key(name)
+        items.append({
+            "name": name,
+            "masked_value": _mask_value(value),
+            "length": len(value),
+            "provider": binding.provider if binding else "",
+            "base_url": binding.base_url if binding else "",
+            "default_model": binding.default_model if binding else "",
+            "has_binding": binding.has_binding() if binding else False,
+        })
     items.sort(key=lambda x: x["name"].upper())
     return {"items": items, "count": len(items), "view": "managed"}
 
@@ -288,7 +280,14 @@ async def get_key_value(name: str):
 
 @app.post("/api/keys", status_code=201)
 async def create_key(payload: KeyCreate):
-    """Create a new env var + auto-add to managed whitelist."""
+    """
+    Create a new env var + add to managed whitelist, optionally with provider binding.
+
+    The binding fields (provider, base_url, default_model) are optional but
+    recommended — they let the Chat tab auto-fill the configuration when
+    this key is selected. If base_url is omitted but a provider is given,
+    the provider's preset base URL is used.
+    """
     if is_managed(payload.name):
         raise HTTPException(
             status_code=409,
@@ -298,24 +297,51 @@ async def create_key(payload: KeyCreate):
         set_user_env(payload.name, payload.value)
     except (ValueError, NotImplementedError, OSError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Apply provider binding if provided
+    if payload.provider or payload.base_url:
+        resolved_url = payload.base_url
+        if not resolved_url and payload.provider:
+            provider = get_provider_by_id(payload.provider)
+            if provider:
+                resolved_url = provider["base_url"]
+        add_managed_key(
+            payload.name,
+            provider=payload.provider,
+            base_url=resolved_url,
+            default_model=payload.default_model,
+        )
+
     return {"name": payload.name, "ok": True}
 
 
 @app.put("/api/keys/{name}")
 async def update_key(name: str, payload: KeyUpdate):
-    """Update an existing managed env var."""
+    """Update an existing managed env var + optionally its binding."""
     if not is_managed(name):
         raise HTTPException(status_code=404, detail=f"Managed key '{name}' not found")
     try:
         set_user_env(name, payload.value)
     except (ValueError, NotImplementedError, OSError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Update binding if any binding field was provided
+    if payload.provider is not None or payload.base_url is not None or payload.default_model is not None:
+        try:
+            current = get_managed_key(name)
+            new_provider = payload.provider if payload.provider is not None else (current.provider if current else "")
+            new_url = payload.base_url if payload.base_url is not None else (current.base_url if current else "")
+            new_model = payload.default_model if payload.default_model is not None else (current.default_model if current else "")
+            update_binding(name, new_provider, new_url, new_model)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     return {"name": name, "ok": True}
 
 
 @app.delete("/api/keys/{name}")
 async def delete_key(name: str):
-    """Delete a managed env var + remove from whitelist."""
+    """Delete a managed env var + remove from whitelist (and its binding)."""
     if not is_managed(name):
         raise HTTPException(status_code=404, detail=f"Managed key '{name}' not found")
     deleted = delete_user_env(name)
@@ -324,14 +350,58 @@ async def delete_key(name: str):
     return {"name": name, "ok": True}
 
 
+@app.put("/api/keys/{name}/binding")
+async def set_binding(name: str, payload: BindingUpdate):
+    """
+    Set or update the provider binding for a managed key (without changing the value).
+
+    This is the "edit binding" endpoint — used by the Chat tab when it
+    needs to set up a provider for the first time, and by the Managed
+    view's binding-edit affordance.
+    """
+    if not is_managed(name):
+        raise HTTPException(status_code=404, detail=f"Managed key '{name}' not found")
+    try:
+        # If base_url is empty but provider is given, resolve from preset
+        resolved_url = payload.base_url
+        if not resolved_url and payload.provider:
+            provider = get_provider_by_id(payload.provider)
+            if provider:
+                resolved_url = provider["base_url"]
+        binding = update_binding(name, payload.provider, resolved_url, payload.default_model)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "name": name,
+        "provider": binding.provider,
+        "base_url": binding.base_url,
+        "default_model": binding.default_model,
+        "ok": True,
+    }
+
+
 @app.post("/api/adopt")
 async def adopt(payload: AdoptRequest):
     """
-    Adopt one or more keys into the managed whitelist.
+    Adopt one or more keys into the managed whitelist, each with optional
+    provider binding.
+
+    Body shapes accepted:
+      - New:   {"items": [{"name": "X", "provider": "DEEPSEEK_API_KEY", "base_url": "..."}]}
+      - Legacy:{"names": ["X", "Y"]}  (no binding — user must configure later)
 
     The env vars must already exist; this just marks them as "manage these".
     """
-    result = adopt_keys_bulk(payload.names)
+    if payload.items:
+        # New format: list of items, each with optional binding
+        items_for_bulk = [item.model_dump() for item in payload.items]
+        result = adopt_keys_bulk(items_for_bulk)
+    elif payload.names:
+        # Legacy format: plain list of names
+        items_for_bulk = [{"name": n} for n in payload.names]
+        result = adopt_keys_bulk(items_for_bulk)
+    else:
+        result = {"adopted": [], "skipped": [], "adopted_count": 0, "skipped_count": 0}
     return result
 
 
@@ -349,7 +419,8 @@ async def unadopt(payload: UnadoptRequest):
 
 @app.get("/api/templates")
 async def list_templates():
-    return {"templates": PRESET_TEMPLATES}
+    """List preset template stubs (name + provider + category) for the Add UI."""
+    return {"templates": _preset_templates()}
 
 
 @app.post("/api/import")
@@ -553,19 +624,15 @@ async def test_key(req: TestRequest):
 
 @app.get("/api/providers")
 async def list_providers():
-    """Return the list of known provider presets (for the chat tab dropdown)."""
-    providers = []
-    for preset in PRESET_TEMPLATES:
-        name = preset["name"]
-        if name in PROVIDER_BASE_URLS or name in PROVIDER_DEFAULT_MODELS:
-            providers.append({
-                "name": name,
-                "provider": preset["provider"],
-                "category": preset["category"],
-                "base_url": PROVIDER_BASE_URLS.get(name, ""),
-                "default_models": _resolve_default_models(name),
-            })
-    return {"providers": providers}
+    """
+    Return the full provider catalog (for Add modal + Chat tab dropdowns +
+    binding-edit UI). Grouped by category for easier rendering.
+    """
+    grouped = get_providers_by_category()
+    return {
+        "providers": list(PROVIDERS),
+        "by_category": grouped,
+    }
 
 
 # ============================================================
