@@ -347,6 +347,14 @@
           <span class="i18n-zh">发现</span>
           <span x-show="discover.adoptable.length > 0" x-text="discover.adoptable.length" class="text-[10px] opacity-60" style="background: var(--success); color: white; border-radius: 999px; padding: 0 5px;"></span>
         </button>
+        <button
+          :class="{ active: view === 'chat' }"
+          @click="switchView('chat')"
+        >
+          <i data-lucide="message-circle" class="w-3.5 h-3.5"></i>
+          <span class="i18n-en">Chat</span>
+          <span class="i18n-zh">对话</span>
+        </button>
       </div>
 
       <!-- Action buttons -->
@@ -674,6 +682,238 @@
       </template>
     </div>
 
+    <!-- ============ CHAT VIEW ============ -->
+    <div x-show="view === 'chat'" x-transition.opacity.duration.150ms>
+
+      <!-- No managed keys: nudge to add first -->
+      <div
+        x-show="managedKeys.length === 0"
+        class="glass rounded-2xl p-12 text-center"
+      >
+        <i data-lucide="message-circle" class="w-12 h-12 mx-auto mb-3" style="color: var(--text-tertiary);"></i>
+        <h3 class="text-[16px] font-semibold mb-1" x-text="t('chatEmptyTitle')"></h3>
+        <p class="text-[13px] mb-4" style="color: var(--text-secondary);" x-text="t('chatEmptyDesc')"></p>
+        <button @click="switchView('managed')" class="btn btn-primary">
+          <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+          <span x-text="t('addFirst')"></span>
+        </button>
+      </div>
+
+      <!-- Chat interface (only when we have keys) -->
+      <div x-show="managedKeys.length > 0" class="grid grid-cols-1 gap-4" style="grid-template-columns: 320px 1fr;">
+
+        <!-- LEFT: key/model picker + capabilities -->
+        <aside class="glass rounded-2xl p-4 space-y-4">
+          <!-- Key selector -->
+          <div>
+            <label class="block text-[10px] font-semibold uppercase tracking-wider mb-1.5" style="color: var(--text-tertiary);">
+              <span x-text="t('chatKey')"></span>
+            </label>
+            <select
+              x-model="chatState.keyName"
+              @change="onChatKeyChange()"
+              class="input"
+              style="font-family: var(--font-mono); font-size: 12px;"
+            >
+              <option value="">
+                <span x-text="t('chatSelectKey')"></span>
+              </option>
+              <template x-for="k in managedKeys" :key="k.name">
+                <option :value="k.name" x-text="k.name"></option>
+              </template>
+            </select>
+          </div>
+
+          <!-- Base URL (editable, prefilled from preset) -->
+          <div>
+            <label class="block text-[10px] font-semibold uppercase tracking-wider mb-1.5" style="color: var(--text-tertiary);">
+              <span x-text="t('chatBaseUrl')"></span>
+            </label>
+            <input
+              type="text"
+              x-model="chatState.baseUrl"
+              placeholder="https://api.openai.com/v1"
+              class="input"
+              style="font-family: var(--font-mono); font-size: 11px;"
+            />
+          </div>
+
+          <!-- Model selector -->
+          <div>
+            <label class="block text-[10px] font-semibold uppercase tracking-wider mb-1.5" style="color: var(--text-tertiary);">
+              <span x-text="t('chatModel')"></span>
+            </label>
+            <input
+              type="text"
+              x-model="chatState.model"
+              list="chat-model-list"
+              placeholder="gpt-4o"
+              class="input"
+              style="font-family: var(--font-mono); font-size: 12px;"
+            />
+            <datalist id="chat-model-list">
+              <template x-for="m in chatState.modelSuggestions" :key="m">
+                <option :value="m"></option>
+              </template>
+            </datalist>
+            <button
+              @click="loadModelsForChatKey()"
+              class="mt-1.5 text-[11px] underline"
+              style="color: var(--text-tertiary);"
+              :disabled="chatState.loadingModels"
+            >
+              <span x-text="chatState.loadingModels ? t('chatLoadingModels') : t('chatRefreshModels')"></span>
+            </button>
+          </div>
+
+          <!-- Test button + capability matrix -->
+          <div class="pt-2" style="border-top: 1px solid var(--border);">
+            <button
+              @click="testChatKey()"
+              class="btn btn-primary w-full"
+              style="justify-content: center;"
+              :disabled="!chatState.keyName || chatState.testing"
+            >
+              <i data-lucide="radar" class="w-3.5 h-3.5"></i>
+              <span x-text="chatState.testing ? t('chatTesting') : t('chatTestBtn')"></span>
+            </button>
+
+            <div x-show="chatState.testResult" class="mt-3 space-y-1.5">
+              <div class="text-[10px] font-semibold uppercase tracking-wider mb-1" style="color: var(--text-tertiary);">
+                <span x-text="t('chatCapabilities')"></span>
+              </div>
+              <template x-for="r in (chatState.testResult?.results || [])" :key="r.name">
+                <div class="flex items-center gap-2 text-[12px]">
+                  <span
+                    class="confidence-dot"
+                    :class="r.supported ? 'conf-high' : (r.status === 'skipped' ? 'conf-low' : 'conf-medium')"
+                    :style="r.supported ? 'background: #34c759;' : (r.status === 'skipped' ? 'background: #8e8e93;' : 'background: #ff3b30;')"
+                  ></span>
+                  <span class="flex-1" x-text="r.label"></span>
+                  <span class="text-[10px] mono" style="color: var(--text-tertiary);" x-text="r.status"></span>
+                </div>
+              </template>
+              <p
+                x-show="chatState.testResult?.summary"
+                class="text-[11px] mt-2"
+                style="color: var(--text-secondary);"
+                x-text="chatState.testResult?.summary"
+              ></p>
+            </div>
+          </div>
+        </aside>
+
+        <!-- RIGHT: messages -->
+        <section class="glass rounded-2xl flex flex-col" style="height: calc(100vh - 12rem); min-height: 480px;">
+
+          <!-- Messages area -->
+          <div
+            x-ref="chatMessages"
+            class="flex-1 overflow-y-auto p-5 space-y-4 nice-scroll"
+          >
+            <!-- Empty state inside chat -->
+            <div
+              x-show="chatState.messages.length === 0"
+              class="text-center py-12"
+              style="color: var(--text-tertiary);"
+            >
+              <i data-lucide="message-circle" class="w-10 h-10 mx-auto mb-2" style="opacity: 0.5;"></i>
+              <p class="text-[13px]" x-text="t('chatStartHint')"></p>
+            </div>
+
+            <template x-for="(msg, idx) in chatState.messages" :key="idx">
+              <div
+                :class="msg.role === 'user' ? 'flex justify-end' : 'flex justify-start'"
+              >
+                <div
+                  class="max-w-[80%] rounded-2xl px-4 py-2.5 text-[13.5px] leading-relaxed"
+                  :style="msg.role === 'user'
+                    ? 'background: var(--accent); color: white;'
+                    : 'background: var(--bg-input); color: var(--text-primary);'"
+                >
+                  <!-- Role label -->
+                  <div
+                    class="text-[10px] font-semibold uppercase tracking-wider mb-1 opacity-70"
+                    x-text="msg.role === 'user'
+                      ? (lang === 'zh' ? '你' : 'You')
+                      : (chatState.keyName || 'AI')"
+                  ></div>
+                  <!-- Content -->
+                  <div class="whitespace-pre-wrap break-words" x-text="msg.content"></div>
+                  <!-- Error indicator -->
+                  <div
+                    x-show="msg.error"
+                    class="mt-2 text-[11px] flex items-center gap-1"
+                    style="color: var(--error);"
+                  >
+                    <i data-lucide="alert-circle" class="w-3 h-3"></i>
+                    <span x-text="msg.error"></span>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Streaming indicator -->
+            <div
+              x-show="chatState.streaming"
+              class="flex justify-start"
+            >
+              <div
+                class="rounded-2xl px-4 py-2.5 text-[13px] flex items-center gap-2"
+                style="background: var(--bg-input); color: var(--text-tertiary);"
+              >
+                <span class="flex gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full" style="background: currentColor; animation: pulse 1.2s infinite;"></span>
+                  <span class="w-1.5 h-1.5 rounded-full" style="background: currentColor; animation: pulse 1.2s infinite 0.2s;"></span>
+                  <span class="w-1.5 h-1.5 rounded-full" style="background: currentColor; animation: pulse 1.2s infinite 0.4s;"></span>
+                </span>
+                <span x-text="t('chatTyping')"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Input area -->
+          <div class="p-4" style="border-top: 1px solid var(--border);">
+            <div class="flex gap-2">
+              <textarea
+                x-ref="chatInput"
+                x-model="chatState.input"
+                @keydown.enter.exact.prevent="sendChat()"
+                @keydown.shift.enter.exact=""
+                :placeholder="t('chatInputPlaceholder')"
+                :disabled="!chatState.keyName || chatState.streaming"
+                rows="2"
+                class="input flex-1 resize-none"
+                style="font-size: 13px;"
+              ></textarea>
+              <div class="flex flex-col gap-1.5">
+                <button
+                  @click="sendChat()"
+                  class="btn btn-primary"
+                  :disabled="!chatState.keyName || !chatState.input.trim() || chatState.streaming"
+                  style="height: 100%; min-height: 56px; padding: 0 16px;"
+                >
+                  <i data-lucide="send" class="w-4 h-4"></i>
+                </button>
+                <button
+                  @click="clearChat()"
+                  class="btn"
+                  style="padding: 4px 10px; font-size: 11px;"
+                  :disabled="chatState.messages.length === 0"
+                >
+                  <span x-text="t('chatClear')"></span>
+                </button>
+              </div>
+            </div>
+            <p class="text-[10.5px] mt-1.5" style="color: var(--text-tertiary);">
+              <span x-text="t('chatEnterHint')"></span>
+            </p>
+          </div>
+        </section>
+
+      </div>
+    </div>
+
     <!-- ============ TEMPLATE SIDEBAR (overlay on Managed view) ============ -->
     <div
       x-show="templatesOpen"
@@ -907,6 +1147,26 @@
         adoptAll: 'Adopt All',
         adopt: 'Adopt',
         remove: 'Remove',
+        // Chat
+        chatEmptyTitle: 'No keys to chat with',
+        chatEmptyDesc: 'Add or adopt a key in the Managed view first.',
+        chatKey: 'API Key',
+        chatSelectKey: '— select a key —',
+        chatBaseUrl: 'Base URL',
+        chatModel: 'Model',
+        chatRefreshModels: '↻ fetch model list from provider',
+        chatLoadingModels: 'Loading…',
+        chatTestBtn: 'Test this key',
+        chatTesting: 'Probing…',
+        chatCapabilities: 'Capabilities',
+        chatStartHint: 'Select a key and send a message to start',
+        chatTyping: 'thinking…',
+        chatInputPlaceholder: 'Type a message…',
+        chatClear: 'Clear',
+        chatEnterHint: 'Enter to send · Shift+Enter for new line',
+        chatNoKey: 'Pick a key first',
+        chatNoBaseUrl: 'Could not resolve a base URL for this key. Enter one above.',
+        chatFailed: 'Chat request failed',
         alreadyManaged: 'managed',
         unclearMatch: 'Unclear — please verify',
         allCaughtUp: 'All caught up!',
@@ -977,6 +1237,26 @@
         show3: '展开',
         skippedNote: '跳过的变量包括：PATH、OneDrive、TEMP、TMP、系统服务 key、Azure AD 凭据、OAuth token、shell/开发工具变量，以及任何不符合 LLM 命名规则的环境变量。点击上方按钮查看完整排除规则。',
         keys: '个 key',
+        // Chat
+        chatEmptyTitle: '还没有可用的 key',
+        chatEmptyDesc: '请先在「已管理」添加或导入一个 key。',
+        chatKey: 'API Key',
+        chatSelectKey: '— 选择一个 key —',
+        chatBaseUrl: 'Base URL',
+        chatModel: '模型',
+        chatRefreshModels: '↻ 从服务方拉取模型列表',
+        chatLoadingModels: '加载中…',
+        chatTestBtn: '测试这个 key',
+        chatTesting: '探测中…',
+        chatCapabilities: '支持的能力',
+        chatStartHint: '选一个 key 就可以开始对话了',
+        chatTyping: '正在思考…',
+        chatInputPlaceholder: '说点什么…',
+        chatClear: '清空',
+        chatEnterHint: 'Enter 发送 · Shift+Enter 换行',
+        chatNoKey: '请先选一个 key',
+        chatNoBaseUrl: '无法识别这个 key 的 Base URL，请在上方手动填写',
+        chatFailed: '请求失败',
       },
     };
 
@@ -997,6 +1277,20 @@
         templatesOpen: false,
         showSkipped: false,
         backendDown: false,
+
+        // Chat state
+        chatState: {
+          keyName: '',
+          baseUrl: '',
+          model: '',
+          modelSuggestions: [],
+          messages: [],   // [{role: 'user'|'assistant', content: str, error?: str}]
+          input: '',
+          streaming: false,
+          testing: false,
+          loadingModels: false,
+          testResult: null,
+        },
 
         toast: { visible: false, message: '', type: 'info' },
         modal: { open: false, mode: 'create', name: '', value: '', error: '', showValue: false },
@@ -1088,12 +1382,6 @@
         toggleDark() {
           this.dark = !this.dark;
           this.applyTheme();
-        },
-
-        switchView(v) {
-          this.view = v;
-          if (v === 'discover') this.loadDiscover();
-          this.$nextTick(() => this.initIcons());
         },
 
         // ===== API =====
@@ -1425,6 +1713,221 @@
         showToast(message, type = 'info', duration = 2200) {
           this.toast = { visible: true, message, type };
           setTimeout(() => { this.toast.visible = false; }, duration);
+        },
+
+        // ===== Chat =====
+        async onChatKeyChange() {
+          // Try to resolve base URL + model suggestions from /api/providers
+          if (!this.chatState.keyName) {
+            this.chatState.baseUrl = '';
+            this.chatState.modelSuggestions = [];
+            return;
+          }
+          this.chatState.testResult = null;
+          try {
+            const r = await fetch('/api/providers');
+            const data = await r.json();
+            const upper = this.chatState.keyName.toUpperCase();
+            const match = data.providers.find(p =>
+              p.name === this.chatState.keyName ||
+              p.name.toUpperCase() === upper ||
+              upper.startsWith(p.name.toUpperCase().replace(/_API_KEY$|_TOKEN$/, '')) ||
+              p.name.toUpperCase().replace(/_API_KEY$|_TOKEN$/, '').startsWith(upper)
+            );
+            if (match) {
+              if (!this.chatState.baseUrl && match.base_url) {
+                this.chatState.baseUrl = match.base_url;
+              }
+              this.chatState.modelSuggestions = match.default_models || [];
+              if (!this.chatState.model && match.default_models?.length) {
+                this.chatState.model = match.default_models[0];
+              }
+            }
+          } catch (e) {
+            // best-effort
+          }
+        },
+
+        async loadModelsForChatKey() {
+          if (!this.chatState.keyName) return;
+          this.chatState.loadingModels = true;
+          try {
+            const r = await fetch('/api/test', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: this.chatState.keyName,
+                base_url: this.chatState.baseUrl || null,
+              }),
+            });
+            const data = await r.json();
+            if (data.models && data.models.length) {
+              this.chatState.modelSuggestions = data.models;
+              if (!this.chatState.model) this.chatState.model = data.models[0];
+              this.showToast(this.t('chatRefreshModels') + ' ✓', 'success');
+            } else {
+              this.showToast(this.lang === 'zh' ? '未取到模型列表' : 'No models returned', 'info');
+            }
+          } catch (e) {
+            this.showToast(this.t('chatFailed') + ': ' + e.message, 'error');
+          } finally {
+            this.chatState.loadingModels = false;
+            this.$nextTick(() => this.initIcons());
+          }
+        },
+
+        async testChatKey() {
+          if (!this.chatState.keyName) return;
+          this.chatState.testing = true;
+          try {
+            const r = await fetch('/api/test', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: this.chatState.keyName,
+                base_url: this.chatState.baseUrl || null,
+              }),
+            });
+            const data = await r.json();
+            this.chatState.testResult = data;
+            if (data.supported_count > 0) {
+              this.showToast(
+                this.lang === 'zh'
+                  ? `检测到 ${data.supported_count} 个能力`
+                  : `Detected ${data.supported_count} capabilities`,
+                'success'
+              );
+            } else {
+              this.showToast(this.lang === 'zh' ? '未检测到能力' : 'No capabilities detected', 'info');
+            }
+            if (data.models?.length) {
+              this.chatState.modelSuggestions = data.models;
+              if (!this.chatState.model) this.chatState.model = data.models[0];
+            }
+          } catch (e) {
+            this.showToast(this.t('chatFailed') + ': ' + e.message, 'error');
+          } finally {
+            this.chatState.testing = false;
+            this.$nextTick(() => this.initIcons());
+          }
+        },
+
+        async sendChat() {
+          const text = this.chatState.input.trim();
+          if (!text || this.chatState.streaming) return;
+          if (!this.chatState.keyName) {
+            this.showToast(this.t('chatNoKey'), 'error');
+            return;
+          }
+          if (!this.chatState.baseUrl) {
+            this.showToast(this.t('chatNoBaseUrl'), 'error');
+            return;
+          }
+          if (!this.chatState.model) {
+            this.showToast(this.lang === 'zh' ? '请填写模型名' : 'Model required', 'error');
+            return;
+          }
+
+          // Add user message
+          this.chatState.messages.push({ role: 'user', content: text });
+          this.chatState.input = '';
+          // Capture assistant message index NOW (stable reference, not
+          // re-resolved through the array on every delta — avoids Alpine
+          // reactivity issues with arr[len-1])
+          this.chatState.messages.push({ role: 'assistant', content: '' });
+          const assistantIdx = this.chatState.messages.length - 1;
+          this.chatState.streaming = true;
+          this.scrollChatToBottom();
+
+          try {
+            const resp = await fetch('/api/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: this.chatState.keyName,
+                base_url: this.chatState.baseUrl,
+                model: this.chatState.model,
+                messages: this.chatState.messages
+                  .filter(m => m.role === 'user' || (m.role === 'assistant' && m.content))
+                  .map(m => ({ role: m.role, content: m.content })),
+              }),
+            });
+
+            if (!resp.ok) {
+              const errText = await resp.text();
+              this.chatState.messages[assistantIdx].error =
+                `HTTP ${resp.status}: ${errText.slice(0, 200)}`;
+              this.chatState.streaming = false;
+              this.$nextTick(() => this.initIcons());
+              return;
+            }
+
+            // Read SSE stream — accumulate and split by lines
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              // Split on newlines; keep last (possibly incomplete) line in buf
+              let nlIdx;
+              while ((nlIdx = buf.indexOf('\n')) !== -1) {
+                const line = buf.slice(0, nlIdx).replace(/\r$/, '');
+                buf = buf.slice(nlIdx + 1);
+                const trimmed = line.trim();
+                if (!trimmed.startsWith('data:')) continue;
+                const payload = trimmed.slice(5).trim();
+                if (payload === '[DONE]') continue;
+                let json;
+                try { json = JSON.parse(payload); } catch { continue; }
+                const delta = json.choices?.[0]?.delta?.content;
+                if (delta) {
+                  this.chatState.messages[assistantIdx].content += delta;
+                  this.scrollChatToBottom();
+                }
+                if (json.error) {
+                  this.chatState.messages[assistantIdx].error = json.error;
+                }
+              }
+            }
+            // Process any trailing line (no final newline)
+            const tail = buf.trim();
+            if (tail.startsWith('data:') && tail.slice(5).trim() !== '[DONE]') {
+              try {
+                const json = JSON.parse(tail.slice(5).trim());
+                const delta = json.choices?.[0]?.delta?.content;
+                if (delta) {
+                  this.chatState.messages[assistantIdx].content += delta;
+                  this.scrollChatToBottom();
+                }
+              } catch {}
+            }
+          } catch (e) {
+            this.chatState.messages[assistantIdx].error = e.message;
+          } finally {
+            this.chatState.streaming = false;
+            this.$nextTick(() => this.initIcons());
+          }
+        },
+
+        scrollChatToBottom() {
+          this.$nextTick(() => {
+            const el = this.$refs.chatMessages;
+            if (el) el.scrollTop = el.scrollHeight;
+          });
+        },
+
+        clearChat() {
+          this.chatState.messages = [];
+        },
+
+        // Override switchView to load models when entering chat
+        switchView(v) {
+          this.view = v;
+          if (v === 'discover') this.loadDiscover();
+          if (v === 'chat' && this.chatState.keyName) this.onChatKeyChange();
+          this.$nextTick(() => this.initIcons());
         },
       };
     }

@@ -40,6 +40,104 @@ from env_manager import (
     is_managed,
     get_managed_keys,
 )
+from chat import probe_capabilities, stream_chat, fetch_models
+from fastapi.responses import StreamingResponse
+
+
+# ============================================================
+# Provider metadata (key name → default base URL + display name)
+# Used by /api/chat and /api/test to know where to send requests
+# without making the user type the endpoint every time.
+# ============================================================
+
+PROVIDER_BASE_URLS: Dict[str, str] = {
+    # International
+    "OPENAI_API_KEY":           "https://api.openai.com/v1",
+    "ANTHROPIC_API_KEY":        "https://api.anthropic.com/v1",
+    "GOOGLE_API_KEY":           "https://generativelanguage.googleapis.com/v1beta",
+    "MISTRAL_API_KEY":          "https://api.mistral.ai/v1",
+    "COHERE_API_KEY":           "https://api.cohere.ai/v1",
+    "GROQ_API_KEY":             "https://api.groq.com/openai/v1",
+    "PERPLEXITY_API_KEY":       "https://api.perplexity.ai",
+    "XAI_API_KEY":              "https://api.x.ai/v1",
+    "DEEPSEEK_API_KEY":         "https://api.deepseek.com/v1",
+    "MOONSHOT_API_KEY":         "https://api.moonshot.cn/v1",
+    # Aggregators (all OpenAI-compatible)
+    "OPENROUTER_API_KEY":       "https://openrouter.ai/api/v1",
+    "TOGETHER_API_KEY":         "https://api.together.xyz/v1",
+    "FIREWORKS_API_KEY":        "https://api.fireworks.ai/inference/v1",
+    "REPLICATE_API_TOKEN":      "https://api.replicate.com/v1",
+    "HF_TOKEN":                 "https://router.huggingface.co/v1",
+    "ANTHROPIC_VERTEX_API_KEY": "https://us-central1-aiplatform.googleapis.com/v1",
+    "AZURE_OPENAI_API_KEY":     "",  # User must provide
+    "AWS_BEDROCK_API_KEY":      "",  # User must provide
+    "ANYSCALE_API_KEY":         "https://api.endpoints.anyscale.com/v1",
+    # Chinese
+    "SILICONFLOW_API_KEY":      "https://api.siliconflow.cn/v1",
+    "ARK_API_KEY":              "https://ark.cn-beijing.volces.com/api/v3",
+    "ZHIPUAI_API_KEY":          "https://open.bigmodel.cn/api/paas/v4",
+    "QIANFAN_API_KEY":          "https://qianfan.baidubce.com/v2",
+    "DASHSCOPE_API_KEY":        "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    # Agnes (free, multimodal, Singapore)
+    "AGNES_API_KEY":            "https://apihub.agnes-ai.com/v1",
+}
+
+# Common model hints per provider (used to populate the model dropdown
+# when /v1/models is not available or empty)
+PROVIDER_DEFAULT_MODELS: Dict[str, List[str]] = {
+    "OPENAI_API_KEY":     ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+    "ANTHROPIC_API_KEY":  ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
+    "GOOGLE_API_KEY":     ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"],
+    "GROQ_API_KEY":       ["llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    "DEEPSEEK_API_KEY":   ["deepseek-chat", "deepseek-reasoner"],
+    "OPENROUTER_API_KEY": ["openai/gpt-4o", "anthropic/claude-3.5-sonnet", "meta-llama/llama-3.1-70b-instruct"],
+    "MOONSHOT_API_KEY":   ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
+    "SILICONFLOW_API_KEY": ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3", "Pro/Qwen/Qwen2-7B-Instruct"],
+    "ARK_API_KEY":        ["doubao-pro-32k", "doubao-lite-32k"],
+    "DASHSCOPE_API_KEY":  ["qwen-plus", "qwen-turbo", "qwen-max"],
+    "ZHIPUAI_API_KEY":    ["glm-4-plus", "glm-4-flash", "glm-4"],
+    "AGNES_API_KEY":      ["agnes-2.0-flash", "agnes-1.5-flash"],
+}
+
+
+def _resolve_base_url(name: str, override: Optional[str]) -> str:
+    """Return the base URL for a managed key. User override wins, else preset.
+
+    Match priority:
+      1. Exact match
+      2. Case-insensitive exact match ("Agnes" → "AGNES_API_KEY" if exact keys differ)
+      3. Case-insensitive prefix match ("Agnes" → "AGNES_API_KEY" since
+         AGNES starts with "AGNES" / "Agnes" starts with "AGNES")
+      4. Return "" (caller raises 400)
+    """
+    if override:
+        return override.rstrip("/")
+    if name in PROVIDER_BASE_URLS:
+        return PROVIDER_BASE_URLS[name]
+    # Case-insensitive exact
+    upper = name.upper()
+    for k, v in PROVIDER_BASE_URLS.items():
+        if k.upper() == upper:
+            return v
+    # Case-insensitive prefix (e.g., "Agnes" matches "AGNES_API_KEY")
+    for k, v in PROVIDER_BASE_URLS.items():
+        if k.upper().startswith(upper + "_") or upper.startswith(k.upper().rstrip("_") + "_"):
+            return v
+    return ""
+
+
+def _resolve_default_models(name: str) -> List[str]:
+    """Return default model list for a key, with case-insensitive matching."""
+    if name in PROVIDER_DEFAULT_MODELS:
+        return PROVIDER_DEFAULT_MODELS[name]
+    upper = name.upper()
+    for k, v in PROVIDER_DEFAULT_MODELS.items():
+        if k.upper() == upper:
+            return v
+    for k, v in PROVIDER_DEFAULT_MODELS.items():
+        if k.upper().startswith(upper + "_") or upper.startswith(k.upper().rstrip("_") + "_"):
+            return v
+    return []
 
 
 # ============================================================
@@ -77,6 +175,20 @@ class AdoptRequest(BaseModel):
 
 class UnadoptRequest(BaseModel):
     name: str
+
+
+class ChatRequest(BaseModel):
+    name: str = Field(..., description="Managed key name (e.g. 'AGNES_API_KEY')")
+    base_url: Optional[str] = Field(None, description="Override base URL; defaults to preset")
+    model: str = Field(..., description="Model name to use")
+    messages: List[Dict] = Field(..., description="OpenAI-style messages array")
+    temperature: float = 0.7
+    max_tokens: Optional[int] = None
+
+
+class TestRequest(BaseModel):
+    name: str = Field(..., description="Managed key name to test")
+    base_url: Optional[str] = Field(None, description="Override base URL")
 
 
 # ============================================================
@@ -357,6 +469,103 @@ def open_browser_when_ready(url: str, delay: float = 1.5):
         except Exception:
             pass
     threading.Thread(target=_open, daemon=True).start()
+
+
+# ============================================================
+# Chat + Test endpoints
+# ============================================================
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    """
+    Stream a chat completion (Server-Sent Events).
+
+    Looks up the managed key value, resolves base URL, then proxies
+    the request as a streaming response so the browser can render
+    tokens as they arrive.
+    """
+    env = read_managed_env()
+    if req.name not in env:
+        raise HTTPException(status_code=404, detail=f"Managed key '{req.name}' not found")
+
+    api_key = env[req.name]
+    base_url = _resolve_base_url(req.name, req.base_url)
+    if not base_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No known base URL for '{req.name}'. "
+                f"Pass 'base_url' in the request body, or add it to PROVIDER_BASE_URLS in main.py."
+            ),
+        )
+
+    return StreamingResponse(
+        stream_chat(
+            key=api_key,
+            base_url=base_url,
+            model=req.model,
+            messages=req.messages,
+            temperature=req.temperature,
+            max_tokens=req.max_tokens,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx-style buffering
+        },
+    )
+
+
+@app.post("/api/test")
+async def test_key(req: TestRequest):
+    """
+    Probe a managed key for which endpoints it can access.
+    Returns a capability matrix for the frontend to display.
+    """
+    env = read_managed_env()
+    if req.name not in env:
+        raise HTTPException(status_code=404, detail=f"Managed key '{req.name}' not found")
+
+    api_key = env[req.name]
+    base_url = _resolve_base_url(req.name, req.base_url)
+    if not base_url:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No known base URL for '{req.name}'. "
+                f"Pass 'base_url' in the request body."
+            ),
+        )
+
+    result = await probe_capabilities(api_key, base_url)
+
+    # Also fetch model list if the /models endpoint is up
+    models = []
+    if any(r["name"] == "models" and r["supported"] for r in result["results"]):
+        models = await fetch_models(api_key, base_url)
+    if not models:
+        # Fall back to the static defaults for this provider
+        models = _resolve_default_models(req.name)
+
+    result["models"] = models
+    return result
+
+
+@app.get("/api/providers")
+async def list_providers():
+    """Return the list of known provider presets (for the chat tab dropdown)."""
+    providers = []
+    for preset in PRESET_TEMPLATES:
+        name = preset["name"]
+        if name in PROVIDER_BASE_URLS or name in PROVIDER_DEFAULT_MODELS:
+            providers.append({
+                "name": name,
+                "provider": preset["provider"],
+                "category": preset["category"],
+                "base_url": PROVIDER_BASE_URLS.get(name, ""),
+                "default_models": _resolve_default_models(name),
+            })
+    return {"providers": providers}
 
 
 # ============================================================

@@ -17,10 +17,14 @@ providers — and are tired of `setx` every single time.
 - **One-click CRUD** for any User-level environment variable
 - **24 preset templates** across 3 categories — International, Aggregator, Chinese
 - **Live search** by name
+- **Whitelist-based "Managed" view** — only keys you opt-in appear (PATH, OneDrive, etc. are invisible by design)
+- **"Discover" view** — auto-classifies your existing env vars and surfaces probable LLM keys for one-click adoption
+- **Built-in Chat tab** — test any managed key against a real model, with capability matrix and streaming responses
 - **Import / Export `.env`** for Docker, Linux servers, CI/CD
 - **Sensitive masking** — values show as `sk-p****xyz`, click 👁 to reveal
 - **Copy-to-clipboard** with one click
 - **Dark mode** with system preference detection
+- **EN / ZH i18n** with auto-detect
 - **Zero cloud, zero account, zero telemetry** — your keys never leave your machine
 - **Single-file `.exe`** available (no Python install required)
 
