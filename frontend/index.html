@@ -1106,6 +1106,9 @@
               <input
                 type="text"
                 x-model="modal.baseUrl"
+                @input="modal.baseUrlDirty = true"
+                @mousedown.stop
+                @mouseup.stop
                 :placeholder="t('bindingBaseUrl')"
                 class="input mono"
                 style="font-size: 12px;"
@@ -1113,6 +1116,9 @@
               <input
                 type="text"
                 x-model="modal.defaultModel"
+                @input="modal.defaultModelDirty = true"
+                @mousedown.stop
+                @mouseup.stop
                 :placeholder="t('bindingModel')"
                 class="input mono"
                 style="font-size: 12px;"
@@ -1256,6 +1262,9 @@
           <input
             type="text"
             x-model="chatState.baseUrl"
+            @input="chatState.baseUrlDirty = true"
+            @mousedown.stop
+            @mouseup.stop
             class="w-full px-3 py-2 rounded-xl text-[13px] mono"
             style="background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);"
             placeholder="https://api.example.com/v1"
@@ -1270,6 +1279,9 @@
           <input
             type="text"
             x-model="chatState.model"
+            @input="chatState.modelDirty = true"
+            @mousedown.stop
+            @mouseup.stop
             class="w-full px-3 py-2 rounded-xl text-[13px] mono"
             style="background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-primary);"
             placeholder="gpt-4o"
@@ -1518,6 +1530,8 @@
           showBindingPrompt: false,    // show the one-time binding-setup modal?
           pendingProvider: '',         // user-selected provider id in the binding modal
           providersCache: [],          // cached list of providers for the binding modal
+          baseUrlDirty: false,         // user has manually edited baseUrl in the modal
+          modelDirty: false,           // user has manually edited model in the modal
         },
 
         toast: { visible: false, message: '', type: 'info' },
@@ -1708,6 +1722,7 @@
             open: true, mode: 'create', name: '', value: '', error: '',
             showValue: false, provider: '', baseUrl: '', defaultModel: '',
             providersList: [], skipBinding: false,
+            baseUrlDirty: false, defaultModelDirty: false,
           };
           // Pre-load provider list for the binding selector
           try {
@@ -1719,11 +1734,20 @@
         },
 
         onModalProviderChange() {
+          // When the user picks a NEW provider, always fill the preset
+          // base_url + first model. We only respect their manual edits
+          // if they've actually typed something (marked via baseUrlDirty /
+          // defaultModelDirty). The previous "is empty?" check was too
+          // sticky: once the preset URL was filled, switching providers
+          // wouldn't update it because it was no longer empty.
           const p = this.modal.providersList.find(x => x.id === this.modal.provider);
-          if (p) {
-            if (p.base_url && !this.modal.baseUrl) this.modal.baseUrl = p.base_url;
-            if (p.models?.length && !this.modal.defaultModel) this.modal.defaultModel = p.models[0];
-          }
+          if (!p) return;
+          // Reset dirty flags on provider switch — the user's previous
+          // edits were for a DIFFERENT provider's defaults.
+          if (p.base_url) this.modal.baseUrl = p.base_url;
+          if (p.models?.length) this.modal.defaultModel = p.models[0];
+          this.modal.baseUrlDirty = false;
+          this.modal.defaultModelDirty = false;
         },
 
         async openEdit(name) {
@@ -1996,12 +2020,19 @@
           // Resolve base URL + model from the user's persisted binding
           // (managed_keys.json). Falls back to /api/providers preset by key
           // name if no binding exists yet (binding-edit UI will prompt user).
+          //
+          // SWITCHING to a DIFFERENT key = reset manual-edit flags. The
+          // user's previous edits were for a different key's defaults.
+          // SWITCHING provider in the binding modal uses dirty flags to
+          // preserve manual edits (see onPendingProviderChange).
           if (!this.chatState.keyName) {
             this.chatState.baseUrl = '';
             this.chatState.modelSuggestions = [];
             this.chatState.hasBinding = false;
             return;
           }
+          this.chatState.baseUrlDirty = false;
+          this.chatState.modelDirty = false;
           this.chatState.testResult = null;
           try {
             // Look up the key's binding from /api/keys
@@ -2009,13 +2040,10 @@
             const data = await r.json();
             const item = (data.items || []).find(k => k.name === this.chatState.keyName);
             if (item && item.has_binding) {
-              // User has a binding — use it
-              if (!this.chatState.baseUrl && item.base_url) {
-                this.chatState.baseUrl = item.base_url;
-              }
-              if (!this.chatState.model && item.default_model) {
-                this.chatState.model = item.default_model;
-              }
+              // User has a binding — use it (always overwrite on key switch,
+              // since the previous baseUrl/model was for a DIFFERENT key).
+              if (item.base_url) this.chatState.baseUrl = item.base_url;
+              if (item.default_model) this.chatState.model = item.default_model;
               this.chatState.hasBinding = true;
             } else {
               this.chatState.hasBinding = false;
@@ -2033,7 +2061,7 @@
             );
             if (match) {
               this.chatState.modelSuggestions = match.models || [];
-              if (!this.chatState.model && match.models?.length) {
+              if (match.models?.length && !this.chatState.model) {
                 this.chatState.model = match.models[0];
               }
             }
@@ -2092,18 +2120,18 @@
         },
 
         onPendingProviderChange() {
-          // When user picks a provider, auto-fill base URL + first model —
-          // BUT preserve any value the user already typed in the input (don't
-          // silently overwrite a custom URL like Azure's
-          // https://my-resource.openai.azure.com/ with the preset URL).
-          // Matches the guard used in onModalProviderChange.
+          // When user picks a NEW provider, always fill preset base_url +
+          // first model. We only respect manual edits if the user has
+          // actually typed in the field (marked via baseUrlDirty / modelDirty).
+          // The previous "is empty?" check was too sticky — once preset
+          // URL was filled, switching providers wouldn't update it because
+          // it was no longer empty.
           const p = this.chatState.providersCache.find(x => x.id === this.chatState.pendingProvider);
-          if (p) {
-            if (p.base_url && !this.chatState.baseUrl) this.chatState.baseUrl = p.base_url;
-            if (!this.chatState.model && p.models?.length) {
-              this.chatState.model = p.models[0];
-            }
-          }
+          if (!p) return;
+          if (p.base_url) this.chatState.baseUrl = p.base_url;
+          if (p.models?.length) this.chatState.model = p.models[0];
+          this.chatState.baseUrlDirty = false;
+          this.chatState.modelDirty = false;
         },
 
         async saveBindingFromChat() {
